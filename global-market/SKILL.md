@@ -343,6 +343,28 @@ r = requests.get(url, headers=headers, timeout=15)
   → 输出完整列表
 ```
 
+### 板块推荐附 ETF（用户偏好）
+
+用户是**新手投资者，偏好通过主题ETF布局热门板块**。当用户问「推荐板块」「热门概念」「今天哪些板块涨得好」「XX板块怎么样」时，输出板块行情**必须**附加对应主题ETF信息：
+
+```bash
+# 查板块
+~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py --sector "CPO,机器人"
+
+# 手动查ETF（用 references/etf-mapping.md 映射查询）
+curl -s "https://qt.gtimg.cn/q=sh515050" | iconv -f GBK -t UTF-8 | awk -F'~' '{print $2, $3" 涨跌幅"$32"%"}'
+```
+
+输出格式示例：
+```
+共封装光学(CPO)(概念) +5.29%
+  🏷️ 通信ETF(515050) 📈 +5.49%
+机器人概念(概念) -2.50%
+  🏷️ 机器人ETF(562500) 📉 -1.23%
+```
+
+无对应ETF的板块显示「🏷️ 无直接对应ETF」。完整映射见 `references/etf-mapping.md`。
+
 ### 模糊匹配规则
 
 | 用户输入 | 匹配结果 | 说明 |
@@ -518,7 +540,169 @@ curl -s "https://qt.gtimg.cn/q=sh512890" | iconv -f GBK -t UTF-8
 
 <!-- 板块/行业行情查询旧章节已合并到上方 ## A股板块查询 (--sector) -->
 
-## References
+## 收盘日报推送格式（微信/聊天窗口）
+
+当通过 cron job 将板块日报推送到微信聊天框时，**绝对不要使用 markdown 表格或 box-drawing 字符**（┌─┬─┐等），这些在聊天窗口中渲染为乱码，不可读。
+
+### 正确格式（纯文本，每行一条）
+
+```
+📊 A股板块收盘日报 — 05月22日(Fri)
+
+📈 涨幅 TOP 10（概念+行业混合）
+  1. 培育钻石(概念) 📈 +7.24%
+  2. PCB概念(概念) 📈 +6.33%
+  3. 同花顺果指数(概念) 📈 +5.67%
+  4. 玻璃行业(行业) 📈 +5.60%
+  5. 共封装光学(CPO)(概念) 📈 +5.29%
+  6. PET铜箔(概念) 📈 +5.22%
+  7. 超级电容(概念) 📈 +5.02%
+  8. 富士康概念(概念) 📈 +4.58%
+  9. 华为手机(概念) 📈 +4.58%
+  10. 化纤行业(行业) 📈 +4.51%
+
+📉 跌幅 TOP 10（概念+行业混合）
+  1. 酿酒行业(行业) 📉 -1.80%
+  2. 白酒概念(概念) 📉 -0.98%
+  3. 金融行业(行业) 📉 -0.83%
+  4. 酒店旅游(行业) 📉 -0.83%
+  5. 重组蛋白(概念) 📉 -0.74%
+  6. 生物制药(行业) 📉 -0.60%
+  7. 生物疫苗(概念) 📉 -0.59%
+  8. 动物疫苗(概念) 📉 -0.47%
+  9. 养鸡(概念) 📉 -0.45%
+  10. 期货概念(概念) 📉 -0.44%
+
+📋 概览：概念387个+行业49个｜上涨413 下跌22 平盘1
+    最高：培育钻石(概念) +7.24% → 🏷️ 无直接对应ETF
+    最深：酿酒行业(行业) -1.80% → 🏷️ 酒ETF(512690) 📉 -2.20%
+```
+
+> ETF行情来自腾讯 qt.gtimg.cn，板块→ETF映射见 `references/etf-mapping.md`。
+
+### 生成方式（Python 内联，非 run.py）
+
+cron job（job_id: b6fd5bdf327c）不直接调用 run.py，而是使用以下 Python 代码内联生成：
+
+```python
+import akshare as ak
+import requests as req
+from datetime import datetime
+
+# ========== 板块→ETF映射（完整映射见 references/etf-mapping.md） ==========
+ETF_MAP = {
+    'PCB概念': ('半导体ETF', '512480'),
+    '共封装光学(CPO)': ('通信ETF', '515050'),
+    '华为手机': ('消费电子ETF', '159732'),
+    '白酒概念': ('酒ETF', '512690'),
+    '酿酒行业': ('酒ETF', '512690'),
+    '金融行业': ('金融ETF', '510230'),
+    '芯片概念': ('半导体ETF', '512480'),
+    '机器人概念': ('机器人ETF', '562500'),
+    '人工智能': ('人工智能ETF', '515070'),
+    '新能源': ('新能源ETF', '516160'),
+    '黄金概念': ('黄金ETF', '518880'),
+    '券商': ('证券ETF', '512880'),
+    '银行': ('银行ETF', '512800'),
+    '医药': ('医药ETF', '512010'),
+    '军工': ('军工ETF', '512660'),
+    '消费': ('消费ETF', '159928'),
+    # 行业板块
+    '酒店旅游': ('旅游ETF', '562510'),
+    '玻璃行业': ('建材ETF', '516750'),
+    '化纤行业': ('化工ETF', '516020'),
+    '有色金属': ('有色ETF', '512400'),
+    '电力行业': ('电力ETF', '159611'),
+    '国防军工': ('军工ETF', '512660'),
+    # ... 完整映射见 references/etf-mapping.md
+}
+
+def find_etf(name):
+    if name in ETF_MAP:
+        return ETF_MAP[name]
+    for key, etf in ETF_MAP.items():
+        if key in name or name in key:
+            return etf
+    return None
+
+def query_etf(code):
+    prefix = 'sh' if code[0] in '56' else 'sz'
+    try:
+        r = req.get(f'https://qt.gtimg.cn/q={prefix}{code}', timeout=5)
+        parts = r.text.split('~')
+        if len(parts) > 32:
+            return float(parts[32]), parts[1]
+    except:
+        pass
+    return None, None
+
+# 获取概念板块
+concept = ak.stock_fund_flow_concept()
+concept_list = [(row['行业'], '概念', row['行业-涨跌幅']) for _, row in concept.iterrows()]
+
+# 获取行业板块
+industry = ak.stock_sector_spot(indicator='新浪行业')
+industry_list = [(row['板块'], '行业', row['涨跌幅']) for _, row in industry.iterrows()]
+
+# 合并排序
+combined = concept_list + industry_list
+combined.sort(key=lambda x: x[2], reverse=True)
+
+ups = combined[:10]
+downs = combined[-10:]
+downs.reverse()
+
+# 统计数据
+up_count = sum(1 for _,_,c in combined if c > 0)
+down_count = sum(1 for _,_,c in combined if c < 0)
+flat_count = len(combined) - up_count - down_count
+
+today = datetime.now().strftime('%m月%d日(%a)')
+
+print(f'📊 A股板块收盘日报 — {today}')
+print()
+print(f'📈 涨幅 TOP 10（概念+行业）')
+for i, (name, typ, chg) in enumerate(ups, 1):
+    etf = find_etf(name)
+    print(f'  {i}. {name}({typ}) 📈 {chg:+.2f}%')
+    if etf:
+        etf_chg, _ = query_etf(etf[1])
+        if etf_chg is not None:
+            sym = '📈' if etf_chg >= 0 else '📉'
+            print(f'         🏷️ {etf[0]}({etf[1]}) {sym} {etf_chg:+.2f}%')
+        else:
+            print(f'         🏷️ {etf[0]}({etf[1]}) — 暂无行情')
+    else:
+        print(f'         🏷️ 无直接对应ETF')
+print()
+print(f'📉 跌幅 TOP 10（概念+行业）')
+for i, (name, typ, chg) in enumerate(downs, 1):
+    etf = find_etf(name)
+    print(f'  {i}. {name}({typ}) 📉 {chg:+.2f}%')
+    if etf:
+        etf_chg, _ = query_etf(etf[1])
+        if etf_chg is not None:
+            sym = '📈' if etf_chg >= 0 else '📉'
+            print(f'         🏷️ {etf[0]}({etf[1]}) {sym} {etf_chg:+.2f}%')
+        else:
+            print(f'         🏷️ {etf[0]}({etf[1]}) — 暂无行情')
+    else:
+        print(f'         🏷️ 无直接对应ETF')
+print()
+print(f'📋 概览：概念{len(concept_list)}个+行业{len(industry_list)}个｜上涨{up_count} 下跌{down_count} 平盘{flat_count}')
+print(f'    最高：{combined[0][0]}({combined[0][1]}) {combined[0][2]:+.2f}%')
+print(f'    最深：{combined[-1][0]}({combined[-1][1]}) {combined[-1][2]:+.2f}%')
+```
+
+### 关键要求
+- ❌ 禁 markdown 表格（| 列 | 语法）
+- ❌ 禁 box-drawing 表格线（┌─┬─┐）
+- ✅ 每条板块一行：序号. 板块名(类型) 📈/📉 涨跌幅%
+- ✅ 涨幅区和跌幅区之间用空行隔开
+- ✅ 末尾加概览行：概念+行业总数、上涨/下跌/平盘数量、最高/最低板块
+- ✅ 标题含日期
+- cron job schedule: `30 15 * * 1-5`（交易日15:30 CST）
+- job_id: `b6fd5bdf327c`，技能：`global-market`
 
 - `references/csi-indices.md` — CSI H-series 中证指数数据来源与映射表细化
 - `references/sector-mapping.md` — 28个常见 A 股板块/行业名称映射表（用户输入→数据源精确名）
@@ -526,3 +710,4 @@ curl -s "https://qt.gtimg.cn/q=sh512890" | iconv -f GBK -t UTF-8
 - `references/nasdaq-api.md` — 新浪美股 API 文档（指数历史数据，替代 Nasdaq API）
 - `references/fund-api.md` — 天天基金净值 API（基金实时估算净值）
 - `references/charting.md` — matplotlib 暗色主题 K 线图生成（含 --chart 自动化用法）
+- `references/etf-mapping.md` — 板块→主题ETF映射表（50+概念/行业），用于收盘日报推荐

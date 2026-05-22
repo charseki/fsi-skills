@@ -730,15 +730,15 @@ def query_sector(queries, kind="concept"):
     return label + "\n\n" + "\n".join(lines)
 
 
-def list_sectors_summary(top_n=8):
-    """快速概览：涨幅前 N 和跌幅前 N 的概念板块"""
-    data = _load_concept_flow() or _load_sector_data("concept")
+def list_sectors_summary(top_n=8, kind="concept"):
+    data = _load_concept_flow() or _load_sector_data(kind)
     if data is None:
         return "❌ 板块数据加载失败"
 
     sorted_items = sorted(data.items(), key=lambda x: x[1], reverse=True)
 
-    lines = [f"📊 A股概念板块速览（共 {len(sorted_items)} 个）", ""]
+    label = "行业" if kind == "industry" else "概念"
+    lines = [f"📊 A股{label}板块速览（共 {len(sorted_items)} 个）", ""]
 
     # 涨幅前 N
     lines.append(f"🔺 涨幅前 {top_n}：")
@@ -809,7 +809,8 @@ def main():
                         top_n = int(a.replace("--top", ""))
                     except ValueError:
                         top_n = 5
-            result = list_sectors_summary(top_n=top_n)
+            kind = "industry" if has_industry else "concept"
+            result = list_sectors_summary(top_n=top_n, kind=kind)
             print(result)
             return
 

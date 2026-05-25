@@ -4,8 +4,10 @@
 import sys
 import re
 import json
+import os
 import requests as req
 from datetime import datetime, timedelta
+import pandas as pd
 
 # =========================================================
 # 数据源
@@ -26,6 +28,10 @@ NASDAQ_HEADERS = {
 
 # 全局 Session（复用连接，降低延迟）
 _HTTP = req.Session()
+
+# 图表输出目录（工程目录下的 charts/ 文件夹）
+_CHARTS_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "charts"))
+os.makedirs(_CHARTS_DIR, exist_ok=True)
 
 
 # ═════════════════════════════════════════════════════════
@@ -102,7 +108,12 @@ def search_a_by_name(query):
                 name = parts[0]
                 market_flag = parts[1]
                 code = parts[2]
-                prefix = "sh" if market_flag == "11" else "sz" if market_flag == "12" else market_flag
+                # 优先从市场代码(market_code)字段提取前缀，更准确
+                # 如 "sz002938" → "sz"
+                if len(parts) >= 4 and parts[3].startswith(("sh", "sz", "us", "hk")):
+                    prefix = parts[3][:2]
+                else:
+                    prefix = "sh" if market_flag == "11" else "sz" if market_flag == "12" else market_flag
                 tx_code = f"{prefix}{code}"
                 tx_parts = _tx_fetch(tx_code)
                 if tx_parts:
@@ -500,6 +511,401 @@ def history_index(symbol):
         return f"❌ {name} 历史查询失败: {str(e)}"
 
 
+def _get_a_prefix(code):
+    """根据A股6位代码返回 sh/sz 前缀"""
+    if code.startswith(("60", "68")):
+        return "sh"
+    return "sz"
+
+
+def _resolve_a_code(query):
+    """将A股名称/代码解析为 (sh/sz前缀, 6位代码)；失败返回 None"""
+    if re.match(r"^\d{6}$", query):
+        return _get_a_prefix(query), query
+    try:
+        url = f"https://suggest3.sinajs.cn/suggest/?key={query}&type=11,12&count=1"
+        resp = _HTTP.get(url, headers=SINA_HEADERS, timeout=10)
+        raw = resp.text.strip()
+        if "suggestvalue=" in raw:
+            data = raw.split('"')[1]
+            if data and data != ";":
+                items = data.strip(";").split(";")
+                if items:
+                    parts = items[0].split(",")
+                    if len(parts) >= 3:
+                        code = parts[2]
+                        # 优先从市场代码(market_code)字段提取前缀
+                        if len(parts) >= 4 and parts[3].startswith(("sh", "sz", "us", "hk")):
+                            prefix = parts[3][:2]
+                        else:
+                            flag = parts[1]
+                            prefix = "sh" if flag == "11" else "sz" if flag == "12" else flag
+                        return prefix, code
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_stock_history(market_type, identifier, days=120):
+    """获取个股近90个交易日K线数据
+
+    参数:
+        market_type: "a" / "us" / "hk"
+        identifier: 代码或名称（A股支持中文名）
+        days: 请求的日历天数（需比90交易日多）
+    返回:
+        list[dict] | None — 每个 dict 含 date/open/high/low/close/volume
+    """
+    if market_type == "us":
+        # === 美股/指数 → 新浪 US_MinKService API ===
+        index_map = {"SPX": ".INX", "DJI": ".DJI", "NDX": ".NDX", "COMP": ".IXIC"}
+        sina_symbol = index_map.get(identifier.upper(), identifier.upper())
+
+        url = (
+            "https://stock.finance.sina.com.cn/usstock/api/jsonp.php/"
+            f"var%20data=/US_MinKService.getDailyK"
+            f"?symbol={sina_symbol}&datalen={days}"
+        )
+        resp = _HTTP.get(url, headers=SINA_HEADERS, timeout=15)
+        raw = resp.text.strip()
+
+        # 市前可能有 script 重定向注释
+        m = re.search(r"\[.+\]", raw, re.DOTALL)
+        if not m:
+            return None
+        records = json.loads(m.group())
+        parsed = []
+        for r in records:
+            try:
+                parsed.append({
+                    "date": datetime.strptime(r["d"], "%Y-%m-%d"),
+                    "open": float(r["o"]),
+                    "high": float(r["h"]),
+                    "low": float(r["l"]),
+                    "close": float(r["c"]),
+                    "volume": int(float(r.get("v", 0))) if r.get("v") and r["v"] != "0" else 0,
+                })
+            except (KeyError, ValueError, TypeError):
+                continue
+        return parsed if parsed else None
+
+    elif market_type == "a":
+        # === A股 → Tencent ifzq API（qfqday = 前复权日线）===
+        resolved = _resolve_a_code(identifier)
+        if not resolved:
+            return None
+        prefix, code = resolved
+
+        url = (
+            f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+            f"?param={prefix}{code},day,,,{days},qfq"
+        )
+        resp = _HTTP.get(url, timeout=15)
+        data = resp.json()
+
+        try:
+            records = data["data"][f"{prefix}{code}"]["qfqday"]
+        except (KeyError, TypeError):
+            # 部分股票可能没有 qfqday，试 day
+            try:
+                records = data["data"][f"{prefix}{code}"]["day"]
+            except (KeyError, TypeError):
+                return None
+
+        if not records:
+            return None
+
+        parsed = []
+        for r in records:
+            try:
+                # ifzq 格式: [date, open, close, high, low, volume]
+                dt = datetime.strptime(r[0], "%Y-%m-%d")
+                parsed.append({
+                    "date": dt,
+                    "open": float(r[1]),
+                    "close": float(r[2]),
+                    "high": float(r[3]),
+                    "low": float(r[4]),
+                    "volume": int(float(r[5])),
+                })
+            except (IndexError, ValueError, TypeError):
+                continue
+
+        return parsed if parsed else None
+
+    elif market_type == "hk":
+        # === 港股 → Tencent ifzq API（无前复权，day = 日线）===
+        url = (
+            f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+            f"?param=hk{identifier},day,,,{days},qfq"
+        )
+        resp = _HTTP.get(url, timeout=15)
+        data = resp.json()
+
+        try:
+            records = data["data"][f"hk{identifier}"]["day"]
+        except (KeyError, TypeError):
+            return None
+
+        if not records:
+            return None
+
+        parsed = []
+        for r in records:
+            try:
+                # day 格式: [date, open, close, high, low, volume, ...extra]
+                dt = datetime.strptime(r[0], "%Y-%m-%d")
+                parsed.append({
+                    "date": dt,
+                    "open": float(r[1]),
+                    "close": float(r[2]),
+                    "high": float(r[3]),
+                    "low": float(r[4]),
+                    "volume": int(float(r[5])),
+                })
+            except (IndexError, ValueError, TypeError):
+                continue
+
+        return parsed if parsed else None
+
+    return None
+
+
+def parse_chart_params(raw_query):
+    """从查询字符串中解析动态K线图表参数
+
+    支持的输入格式：
+      "002938,K120,[MA20,MA45,MA120]"  → 120日K线 + 3条均线
+      "茅台,K60,[MA10,MA20]"           → 60日 + 2条均线
+      "AAPL,[MA50,MA100,MA200]"        → 默认90日 + 3条均线
+      "00700,K200"                     → 200日 + 默认MA20/MA90
+      "茅台"                            → 无图表参数 (返回 None)
+
+    返回:
+        (stock_query, k_period, ma_periods)  或 None
+    """
+    # 先提取 [...] 中的均线列表（不分割内部逗号）
+    ma_match = re.search(r"\[([^\]]*?MA\d+[^\]]*?)\]", raw_query, re.IGNORECASE)
+    ma_periods = None
+    remaining = raw_query
+
+    if ma_match:
+        ma_content = ma_match.group(1)
+        periods = re.findall(r"MA(\d+)", ma_content, re.IGNORECASE)
+        if periods:
+            ma_periods = [int(p) for p in periods]
+        remaining = raw_query.replace(ma_match.group(0), "").strip()
+
+    # 在剩余字符串中提取 K<天数>
+    k_match = re.search(r"(?:^|[,;\s]+)K(\d+)(?=$|[,;\s]+)", remaining, re.IGNORECASE)
+    k_period = int(k_match.group(1)) if k_match else None
+
+    if k_period is None and ma_periods is None:
+        return None  # 无图表参数
+
+    # 从 remaining 中移除 K<天数> 片段
+    stock_query = remaining
+    if k_match:
+        stock_query = remaining.replace(k_match.group(0), "").strip()
+
+    # 清理残留的逗号和空格
+    stock_query = re.sub(r"[,;\s]+", " ", stock_query).strip()
+    stock_query = stock_query.replace(" ", ",") if "," in raw_query else stock_query
+
+    k_period = k_period or 90
+    ma_periods = ma_periods or [20, 90]
+    return stock_query, k_period, ma_periods
+
+
+def generate_stock_chart(parsed, name, code, market_type="a", ma_periods=None, k_period=90):
+    """生成个股K线趋势图（K线实体 + 动态MA均线 + 成交量）
+
+    参数:
+        parsed: _fetch_stock_history() 返回的数据
+        name: 股票显示名
+        code: 股票代码
+        market_type: a/us/hk
+        ma_periods: 均线周期列表，如 [20, 45, 120]
+        k_period: K线展示的天数（交易日），如 120
+    返回:
+        图片路径（skill 目录下的 charts/ 文件夹，按参数动态命名如 002938_K120_MA20_MA45_MA120.png）
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    import matplotlib.font_manager as fm
+    import numpy as np
+    from matplotlib.patches import Rectangle
+
+    # —— 注册中文字体 ——
+    _CJK_FONT = "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
+    if _CJK_FONT:
+        fm.fontManager.addfont(_CJK_FONT)
+        plt.rcParams["font.family"] = "WenQuanYi Zen Hei"
+    plt.rcParams["axes.unicode_minus"] = False
+
+    if ma_periods is None:
+        ma_periods = [20, 90]
+
+    # 排序（保留全部数据用于均线计算，画图时再限定展示范围）
+    parsed.sort(key=lambda x: x["date"])
+
+    dates = [d["date"] for d in parsed]
+    opens = np.array([d["open"] for d in parsed])
+    highs = np.array([d["high"] for d in parsed])
+    lows = np.array([d["low"] for d in parsed])
+    closes = np.array([d["close"] for d in parsed])
+
+    # 成交量：A股手数×收盘价/10000=成交额(百万元)，美股/港股保持原始股数
+    vol_raw = np.array([d.get("volume", 0) for d in parsed])
+    if market_type == "a":
+        volumes = vol_raw * closes / 10000.0
+        VOL_LABEL = "成交额(百万元)"
+    elif market_type == "hk":
+        volumes = vol_raw
+        VOL_LABEL = "成交量(股)"
+    else:
+        volumes = vol_raw
+        VOL_LABEL = "Volume"
+
+    # 货币符号
+    sym_cur = "$" if market_type in ("us",) else "HK$" if market_type == "hk" else "¥"
+    label_price = "Price (USD)" if market_type == "us" else "Price (HKD)" if market_type == "hk" else "价格 (元)"
+
+    # —— 动态均线配色（最多8条，循环）——
+    MA_COLORS = ["#ffcc00", "#ff6bff", "#00d4ff", "#ff6b35", "#88ff88", "#ff4466", "#00ffff", "#ffffff"]
+
+    # ---- 暗色主题 ----
+    plt.style.use("dark_background")
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(14, 9),
+        gridspec_kw={"height_ratios": [3, 1]},
+        sharex=True,
+    )
+    fig.patch.set_facecolor("#1a1a2e")
+
+    # —— K线颜色惯例：亚洲红涨绿跌 / 欧美绿涨红跌 ——
+    if market_type in ("a", "hk"):
+        UP_COLOR = "#ff4466"    # 红 = 阳线(上涨)
+        DOWN_COLOR = "#00ff88"  # 绿 = 阴线(下跌)
+    else:
+        UP_COLOR = "#00ff88"    # 绿 = 上涨
+        DOWN_COLOR = "#ff4466"  # 红 = 下跌
+
+    # —— K线 ——
+    x_dates = mdates.date2num(dates)
+    if len(dates) > 1:
+        candle_w = (x_dates[1] - x_dates[0]) * 0.7
+    else:
+        candle_w = 0.6
+
+    for i in range(len(dates)):
+        x = x_dates[i]
+        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+
+        up = c >= o
+        color = UP_COLOR if up else DOWN_COLOR
+
+        # 影线
+        ax1.plot([x, x], [l, h], color=color, linewidth=0.7, alpha=0.5)
+
+        # 实体
+        body_bottom = min(o, c)
+        body_height = abs(c - o) or 0.005
+        rect = Rectangle(
+            (x - candle_w / 2, body_bottom), candle_w, body_height,
+            facecolor=color, edgecolor=color, alpha=0.85, linewidth=0.5,
+        )
+        ax1.add_patch(rect)
+
+    # —— 动态均线 ——
+    drawn_ma = []
+    for i, period in enumerate(ma_periods):
+        if len(closes) >= period:
+            ma = np.convolve(closes, np.ones(period) / period, mode="valid")
+            color = MA_COLORS[i % len(MA_COLORS)]
+            ax1.plot(
+                dates[period - 1:], ma, color=color, linewidth=1.6,
+                linestyle="--", alpha=0.7, label=f"MA{period}", zorder=3,
+            )
+            drawn_ma.append(period)
+
+    # —— 当前价参考线 ——
+    pct = (closes[-1] - closes[0]) / closes[0] * 100
+    ax1.axhline(y=closes[-1], color="#ffaa00", linewidth=1, linestyle=":", alpha=0.5)
+    ax1.annotate(
+        f"最新 {sym_cur}{closes[-1]:.2f}  ({pct:+.2f}%)",
+        (dates[-1], closes[-1]), textcoords="offset points",
+        xytext=(10, 8), fontsize=11, color="#ffaa00", fontweight="bold",
+    )
+
+    # —— 最高/最低标注 ——
+    max_i = int(np.argmax(highs))
+    min_i = int(np.argmin(lows))
+    ax1.scatter(dates[max_i], highs[max_i], color="#00ff88", s=120, zorder=5, marker="^")
+    ax1.scatter(dates[min_i], lows[min_i], color="#ff4466", s=120, zorder=5, marker="v")
+    ax1.annotate(
+        f"最高 {sym_cur}{highs[max_i]:.2f}",
+        (dates[max_i], highs[max_i]), textcoords="offset points",
+        xytext=(12, 12), fontsize=9, color="#88ffbb", fontweight="bold",
+    )
+    ax1.annotate(
+        f"最低 {sym_cur}{lows[min_i]:.2f}",
+        (dates[min_i], lows[min_i]), textcoords="offset points",
+        xytext=(12, -16), fontsize=9, color="#ff8899", fontweight="bold",
+    )
+
+    ax1.set_ylabel(label_price, fontsize=12, color="#ccc")
+    # 动态标题
+    ma_label = "+".join([str(p) for p in drawn_ma])
+    ax1.set_title(
+        f"{name}（{code}）— {dates[-k_period].strftime('%m/%d') if len(dates) > k_period else dates[0].strftime('%m/%d')} ~ {dates[-1].strftime('%m/%d')}"
+        f"  |  {k_period}日K线  MA{ma_label}",
+        fontsize=16, fontweight="bold", color="white", pad=18,
+    )
+    ax1.legend(fontsize=11, loc="upper left")
+    ax1.grid(True, alpha=0.1, linestyle="--")
+    ax1.spines["top"].set_visible(False)
+    ax1.spines["right"].set_visible(False)
+
+    # —— 成交量柱状图 ——
+    if any(volumes):
+        vol_colors = [
+            UP_COLOR if c >= o else DOWN_COLOR
+            for c, o in zip(closes, opens)
+        ]
+        ax2.bar(dates, volumes, color=vol_colors, alpha=0.4, width=candle_w * 1.1)
+        ax2.set_ylabel(VOL_LABEL, fontsize=11, color="#ccc")
+        ax2.grid(True, alpha=0.07, linestyle="--")
+        ax2.spines["top"].set_visible(False)
+        ax2.spines["right"].set_visible(False)
+
+    # X 轴日期
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+    if len(dates) > 20:
+        ax2.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+    # 限定展示范围为最近 k_period 个交易日（保留历史数据用于均线计算）
+    if len(dates) > k_period:
+        x_start = dates[-k_period]
+        x_end = dates[-1]
+        ax1.set_xlim(x_start, x_end)
+        ax2.set_xlim(x_start, x_end)
+
+    # —— 动态文件名（用传入的参数而非实际绘制的） ——
+    ma_part = "_".join([f"MA{p}" for p in ma_periods])
+    code_safe = re.sub(r"[^A-Za-z0-9]", "", code)
+    filename = f"{code_safe}_K{k_period}_{ma_part}.png"
+    out_path = os.path.join(_CHARTS_DIR, filename)
+    plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="#1a1a2e")
+    plt.close(fig)
+    return out_path
+
+
 def generate_chart(parsed, symbol, name):
     """生成 matplotlib 走势图，返回图片路径"""
     import matplotlib
@@ -602,7 +1008,10 @@ def generate_chart(parsed, symbol, name):
     fig.autofmt_xdate()
     plt.tight_layout()
 
-    out_path = "/tmp/hermes_index_chart.png"
+    # —— 动态文件名 ——
+    sym_safe = re.sub(r"[^A-Za-z0-9]", "", symbol)
+    filename = f"{sym_safe}_history.png"
+    out_path = os.path.join(_CHARTS_DIR, filename)
     plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="#1a1a2e")
     plt.close(fig)
     return out_path
@@ -763,6 +1172,9 @@ def list_sectors_summary(top_n=8, kind="concept"):
 def print_usage():
     print("用法:")
     print("  python run.py <股票代码/名称>       # 单条查询")
+    print("  python run.py <代码/名称> --chart   # 单条查询 + 90日K线趋势图(含MA20/MA90)")
+    print("  python run.py \"<代码>,K<天数>,[MA<周期>,...]\"  # 动态K线 + 动态均线")
+    print("                                         # 如: 002938,K120,[MA20,MA45,MA120]")
     print("  python run.py <A,B,C>               # 批量查询（逗号分隔）")
     print("  python run.py --history <INDEX>     # 指数历史分析 (NDX/SPX/DJI/COMP)")
     print("  python run.py --history <INDEX> --chart  # 指数历史 + K线走势图")
@@ -773,8 +1185,10 @@ def print_usage():
     print()
     print("  示例:")
     print("  python run.py 茅台")
-    print("  python run.py AAPL")
-    print("  python run.py 00700")
+    print("  python run.py 茅台 --chart")
+    print("  python run.py AAPL --chart")
+    print("  python run.py 00700 --chart")
+    print("  python run.py 600519 --chart")
     print("  python run.py 汇率美元")
     print("  python run.py USD/CNY")
     print("  python run.py 茅台,AAPL,00700")
@@ -782,6 +1196,11 @@ def print_usage():
     print("  python run.py --history SPX --chart")
     print("  python run.py --sector CPO,机器人,存储芯片")
     print("  python run.py --sector 半导体")
+    print()
+    print("  动态图表示例:")
+    print("  python run.py \"002938,K120,[MA20,MA45,MA120]\"")
+    print("  python run.py \"茅台,K60,[MA10,MA20,MA30]\"")
+    print("  python run.py \"AAPL,[MA50,MA100,MA200]\"")
 
 
 def main():
@@ -854,12 +1273,27 @@ def main():
                 print(f"  （在CLI中可直接打开此文件查看）")
         return
 
-    query = " ".join(args)
+    has_chart = "--chart" in args
 
-    # 检测是否包含逗号分隔 → 批量模式
-    if "," in query:
-        queries = query.split(",")
-        print(batch_query(queries))
+    # 对股票查询：去掉 --chart 后再拼接查询字符串
+    stock_args = [a for a in args if a != "--chart"]
+    raw_query = " ".join(stock_args)
+
+    # 检测动态图表参数（新格式: "002938,K120,[MA20,MA45,MA120]"）
+    parsed_chart = parse_chart_params(raw_query)
+    has_dynamic_chart = parsed_chart is not None
+
+    if has_dynamic_chart:
+        chart_stock_query, chart_k_period, chart_ma_periods = parsed_chart
+        query = chart_stock_query
+    else:
+        chart_k_period = 90
+        chart_ma_periods = [20, 90]
+        query = raw_query
+
+    # 检测是否包含逗号分隔 → 批量模式（仅非动态图表模式）
+    if not has_dynamic_chart and "," in query:
+        print(batch_query(query.split(",")))
         return
 
     market_type, identifier = detect_market(query)
@@ -876,6 +1310,39 @@ def main():
         result = f"无法识别市场类型: {query}"
 
     print(result)
+
+    # 图表生成条件：--chart 或动态参数
+    should_chart = (has_chart or has_dynamic_chart) \
+                   and market_type in ("a", "us", "hk") \
+                   and not result.startswith("❌")
+
+    if should_chart:
+        name_match = re.search(r"\*\*(.+?)\*\*", result)
+        display_name = name_match.group(1) if name_match else identifier
+
+        # 获取实际股票代码用于文件名（A股名称→6位代码）
+        if market_type == "a":
+            resolved = _resolve_a_code(identifier)
+            chart_code = resolved[1] if resolved else re.sub(r"[^A-Za-z0-9]", "", identifier)
+        else:
+            chart_code = identifier.upper()
+
+        try:
+            # 请求足够多的数据（交易日 * 2 确保覆盖）
+            hist = _fetch_stock_history(market_type, identifier, days=max(120, chart_k_period * 2))
+            min_required = min(10, chart_k_period)
+            if hist and len(hist) >= min_required:
+                chart_path = generate_stock_chart(
+                    hist, display_name, chart_code, market_type,
+                    ma_periods=chart_ma_periods, k_period=chart_k_period,
+                )
+                ma_label = "MA" + "+".join(str(p) for p in chart_ma_periods if len(hist) >= p)
+                print(f"\n📈 {chart_k_period}日K线趋势图已生成: {chart_path}")
+                print(f"   均线: {ma_label}")
+            else:
+                print(f"\n⚠️ 未获取到足够的K线数据（当前{len(hist) if hist else 0}条，需≥{min_required}条）")
+        except Exception as e:
+            print(f"\n⚠️ K线图生成失败: {str(e)}")
 
 
 if __name__ == "__main__":

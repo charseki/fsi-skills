@@ -1,7 +1,7 @@
 ---
 name: global-market
 description: 全球金融市场速查 + A股板块行情，支持 A 股、美股、港股、外汇、概念/行业板块，自动识别市场并路由到对应数据源
-version: 1.0.0
+version: 1.1.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -11,6 +11,30 @@ metadata:
 ---
 
 # 全球市场速查
+
+## 目录结构
+
+```
+global-market/
+├── SKILL.md                # 本技能定义文档（版本 1.1.0）
+├── scripts/
+│   └── run.py              # 主查询脚本（个股/基金/外汇/指数/板块/K线图）
+├── charts/                 # 运行时生成的K线图（自动创建）
+│   └── *.png               # 按参数动态命名，如 002938_K120_MA20_MA45_MA120.png
+├── assets/                 # 静态资源
+│   └── stock-chart-preview.png  # 个股K线效果预览图
+└── references/
+    ├── charting.md              # matplotlib K线图生成参考（含数据源详解）
+    ├── csi-indices.md           # CSI 中证指数（H-series）数据源
+    ├── datasource-reference.md  # 各数据源字段详解
+    ├── environment.md           # 腾讯云环境适配说明
+    ├── etf-mapping.md           # 板块→主题ETF映射表（50+概念/行业）
+    ├── fund-api.md              # 天天基金净值 API
+    ├── ifzq-api.md              # Tencent ifzq API（A股/港股历史K线）
+    ├── nasdaq-api.md            # 新浪美股 API（指数历史 + 个股历史）
+    ├── sector-mapping.md        # A股板块名称映射表
+    └── us-futures-sources.md    # 美股期货数据源排查记录
+```
 
 ## When to Use
 - 用户查询任何股票、基金（代码）、货币的行情
@@ -55,9 +79,39 @@ metadata:
    ~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py --history NDX --chart
    ```
 
-   输出：文字分析 + 图片路径 `/tmp/hermes_index_chart.png`（132KB, 150dpi）。
+   输出：文字分析 + 图片存入 `charts/` 文件夹，如 `NDX_history.png`（~132KB, 150dpi）。
 
-**板块查询**：查询 A 股概念/行业板块涨跌幅（通过同花顺资金流向 + 新浪行业数据）：
+**个股K线趋势图**：查询 A 股/美股/港股行情并生成K线趋势图，K线天数和均线列表均可自定义：
+
+   使用 `--chart` 标志启动绘图，配合 **动态参数格式** `<股票>,K<天数>,[MA<周期1>,MA<周期2>,...]` 灵活控制图表参数：
+
+   ```bash
+   # 默认：90日K线 + MA20/MA90
+   ~/venv/bin/python3 run.py 600519 --chart
+   ~/venv/bin/python3 run.py AAPL --chart
+
+   # 自定义K线天数 + 均线列表（逗号分隔，无需 --chart）
+   ~/venv/bin/python3 run.py "002938,K120,[MA20,MA45,MA120]"
+   ~/venv/bin/python3 run.py "茅台,K60,[MA10,MA20]"
+   ~/venv/bin/python3 run.py "AAPL,[MA50,MA100,MA200]"
+   ~/venv/bin/python3 run.py "00700,K200"
+   ```
+
+   - `--chart` 不传动态参数时使用默认值（90日 + MA20/MA90）
+   - 传入动态参数时自动取代默认值（`--chart` 可省略）
+   - K线天数不足指定值时按实际可用天数展示
+   - 均线周期大于数据长度时自动跳过该均线
+   - K线颜色：A股/港股 **红涨绿跌**（亚洲惯例），美股 **绿涨红跌**（欧美惯例）
+   - 成交量柱：A股自动换算为 **成交额(百万元)**（手数 × 收盘价 / 10000），美股保持 Volume
+
+   输出：行情文字 + 图片存入 `charts/` 文件夹，按参数动态命名，如 `002938_K120_MA20_MA45_MA120.png`（~180KB, 150dpi）。
+   数据源：A股/港股走 **Tencent ifzq** API（前复权），美股走新浪 **US_MinKService** API。
+
+   **效果预览：**
+
+   ![stock-chart-preview](assets/stock-chart-preview.png)
+
+ **板块查询**：查询 A 股概念/行业板块涨跌幅
 
    ```bash
    # 查询特定概念板块（逗号分隔）
@@ -76,7 +130,7 @@ metadata:
    ~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py --sector all --top5
    ```
 
-**基金代码兜底**（v1.0.0 自动处理）：6 位纯数字输入 → 先查 A 股 → 若 A 股无此代码 → 自动尝试天天基金净值 API。无需手动区分基金代码。
+**基金代码兜底**（v1.1.0 自动处理）：6 位纯数字输入 → 先查 A 股 → 若 A 股无此代码 → 自动尝试天天基金净值 API。无需手动区分基金代码。
 
 **CSI 中证指数兜底**：如果查询代码以 H 开头（如 H30269），且脚本返回 ❌，则走 CSI 指数兜底流程（参见下方【CSI 中证指数查询】章节）。
 
@@ -122,7 +176,7 @@ metadata:
 
 ## 天天基金净值 API (fundgz.1234567.com.cn) 字段
 
-> 脚本 v1.0.0+ 已内置此兜底逻辑，6位数字输入自动尝试。以下为参考字段说明。
+> 脚本 v1.1.0+ 已内置此兜底逻辑，6位数字输入自动尝试。以下为参考字段说明。
 
 格式：`jsonpgz({"fundcode":"...","name":"...","jzrq":"...","dwjz":"...","gsz":"...","gszzl":"...","gztime":"..."})`
 
@@ -136,6 +190,8 @@ metadata:
 | **基金** | 天天基金 | `fundgz.1234567.com.cn/js/{code}.js` | requests（脚本内置兜底） |
 | **美股** | 腾讯行情 | `qt.gtimg.cn/q=us{symbol}` | requests (无需 yfinance) |
 | **港股** | 新浪行情 | `hq.sinajs.cn/list=hk{code}` (需 Referer header) | requests |
+| **A股历史K线** | Tencent ifzq | `web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh{code},day,,,{days},qfq` | requests (返回 qfqday 前复权) |
+| **港股历史K线** | Tencent ifzq | `web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk{code},day,,,{days},qfq` | requests (返回 day) |
 | **外汇** | open.er-api.com | `GET /v6/latest/{base}` | requests |
 | **A股名称→代码** | 新浪建议 | `suggest3.sinajs.cn/suggest/?key={name}&type=11,12` | requests |
 | **CSI H-series** | 天天基金 | `fundgz.1234567.com.cn/js/{code}.js`（通过跟踪基金推算） | requests |
@@ -217,17 +273,70 @@ A股和美股关键区别：**A股涨跌幅/最高/最低在索引 31-34，美�
 
 如果 base 和 target 相同（如"汇率美元"只匹配到 target=USD 但 base 也是 USD），自动 fallback target 为 CNY。
 
+## US 夜盘/盘前/盘后数据局限
+
+### 用户查询场景
+
+用户说「看下美股夜盘」「XXX 盘前涨跌幅」「美股期货现在什么价」「NQ 期货」「纳斯达克100夜盘」等。
+
+### What IS available
+
+- **US 指数快照**（常规交易时段数据）：`~/venv/bin/python3 run.py "NDX"` → 通过腾讯 qt.gtimg.cn/q=usNDX 获取
+- **US 指数历史**：`~/venv/bin/python3 run.py --history NDX` → 通过新浪美股 API（日 K 线，含上一个收盘日）
+- **US 个股**：`~/venv/bin/python3 run.py "AAPL"` → 通过腾讯 qt.gtimg.cn
+
+### What is NOT available (proven dead ends)
+
+| 数据源 | 目标 | 结果 | 原因 |
+|--------|------|------|------|
+| **yfinance** `NQ=F`, `NQ00Y.SG` | NQ 期货实时价 | ❌ 429 Rate Limited | Yahoo Finance 限流 |
+| **新浪期货** `nf_NQ00Y`, `US_FutKService` | NQ 期货 | ❌ 空数据 / Service not valid | 新浪期货API仅支持国内期货 |
+| **新浪美股 K 线** `US_MinKService` | NDX 期货 K 线 | ❌ 返回2014年数据 | 已废弃 |
+| **EastMoney push2** `86.NQ`, `86.NQ00Y`, `111.NQ` | 海外期货 | ❌ rc:100 (no data) | 不支持海外期货品种 |
+| **腾讯 qt.gtimg.cn** `usNQ`, `usMNQ` | NQ 期货 | ❌ v_pv_none_match | 不覆盖CME期货 |
+| **腾讯 qt.gtimg.cn** `usNDX` | NDX 指数盘前价 | ❌ 只返回常规交易时段快照 | 非盘前数据 |
+| **Google Finance** `NQ=COMEX` | NQ 期货 | ❌ 超时 / 头渲染不出 | 网络限制+无头Chrome需--no-sandbox |
+| **Investing.com / MarketWatch** | NQ 期货 | ❌ Chrome 无法启动 | 需 --no-sandbox |
+
+### What to do when user asks
+
+```bash
+# 1. 先提供指数最近收盘数据（这是目前最可靠的信息）
+~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py "NDX"
+
+# 2. 如果用户需要盘中实时（北京时间21:30-次日04:00），直接用上面方法
+#    这段时间是美股常规交易时段，腾讯数据是准的。
+
+# 3. 如果是非交易时段（盘前16:00-21:30/盘后04:00-08:00 北京时间）：
+#    - 坦诚告知当前环境不支持美股期货/NQ期货实时数据
+#    - 提供指数最近收盘数据作为参考（见步骤1）
+#    - 建议用户通过 TradingView、富途、老虎等专业平台查看
+```
+
+### 时间对应关系
+
+| 美股时段 | 美东时间 (ET) | 北京时间 (UTC+8) |
+|----------|--------------|-----------------|
+| 盘前 (Pre-market) | 04:00-09:30 | 16:00-21:30 |
+| 常规交易 (Regular) | 09:30-16:00 | 21:30-次日04:00 |
+| 盘后 (After-hours) | 16:00-20:00 | 04:00-08:00 |
+| CME Globex NQ 期货 | ~23h/天 (周日晚-周五下午) | 连续交易 |
+
+### 记忆复用
+
+当用户第一次问夜盘数据并被告知局限后，将用户偏好存入记忆（如「用户知道美股夜盘数据限制，下次直接给NDX指数收盘快照即可」），避免重复解释。
+
 ## Common Pitfalls
 
 1. **akshare/yfinance 在腾讯云环境不可用**：Tencent Cloud 拦截 EastMoney API，Yahoo Finance 返回 429。脚本已内置替代数据源（qt.gtimg.cn + hq.sinajs.cn），直接使用 `requests` 无需安装 akshare/yfinance。
 2. **新浪港股需要 Referer header**：不加返回空数据。必须在请求头设置 `Referer: https://finance.sina.com.cn`。
 3. **新浪港股成交额在索引 11 (raw value)，不是索引 12**：容易混淆，成交量在 12。
 4. **美股 52周范围数据来自腾讯字段 48/49（不是 43/44）**：腾讯原始数据中 43/44 是股指参考值，不是个股的 52周范围。
-5. **A股名称搜索依赖新浪建议 API**：`suggest3.sinajs.cn` 偶尔不稳定，如果名称搜索失败可以提示用户使用 6 位代码查询。
+5. **A股名称搜索依赖新浪建议 API，且 market_flag 字段对部分深交所股票返回 11（上海）**：如 002938（鹏鼎控股）返回 `flag=11, market_code=sz002938`。脚本 `search_a_by_name()` 和 `_resolve_a_code()` 已修复——优先从 `market_code` 字段（第4个逗号字段，如 `sz002938`）提取 `sh/sz` 前缀。修复前名称搜索会失败，必须用 6 位代码查询。
 6. **港股代码需要 5 位带前导零**：00700 而非 700，脚本自动 `zfill(5)` 处理。
 7. **外汇 API 免费但有调用次数限制**：open.er-api.com 无认证免费使用，但频繁调用可能限流。
 8. **超出交易时间的行情数据**：返回的是最近收盘价，用户可能误以为是实时价。
-9. **基金代码（6位以0/01开头）会被误判为 A 股代码**：脚本默认把 6 位数字路由到 A 股，而基金 6 位代码（如 016814）在腾讯行情查不到，返回 ❌。v1.0.0 已内置自动基金兜底，不再需要手动指定。
+9. **基金代码（6位以0/01开头）会被误判为 A 股代码**：脚本默认把 6 位数字路由到 A 股，而基金 6 位代码（如 016814）在腾讯行情查不到，返回 ❌。v1.1.0 已内置自动基金兜底，不再需要手动指定。
 10. **指数全名（如"NASDAQ-100"）不被识别**：只能识别短代码（NDX）、6位数字或中文名称。用户输入"NASDAQ-100"会落入 A 股兜底失败。如果用户输入指数全名，提示使用标准代码（NDX、SPX、DJI 等）。
 11. **美股夜盘（盘后）数据不可用**：腾讯行情 qt.gtimg.cn 只返回常规交易时段数据。盘后/夜盘价格不在字段中。如需盘后数据，应让用户等到常规交易收盘后（北京时间凌晨4点后）再查询。
 12. **6位数字输入自动走基金兜底**：如 016814 先查 sh/sz 都失败后自动查天天基金，无需用户手动指定"基金"关键词。
@@ -239,6 +348,9 @@ A股和美股关键区别：**A股涨跌幅/最高/最低在索引 31-34，美�
 18. **腾讯 smartbox 返回 GBK 编码**：`smartbox.gtimg.cn/s3/` 返回 GBK 编码的文本。需用 `iconv -f GBK -t UTF-8` 转码。参数 `t=all` 返回所有类型（股票/ETF/基金/指数），`t=zs` 只返回指数。
 19. **smartbox 搜索用中文名而非代码**：smartbox 使用中文关键词搜索（如"红利低波"），不直接支持 CSI 代码查询。结果格式为 `市场~代码~名称~拼音缩写~类型` 的串联，可用 `^` 分割解析。
 20. **CSI 指数涨跌幅为推算值，非精确值**：通过基金 `gszzl` 字段推算的指数涨跌幅可能存在 ±0.05% 的误差。ETF 实时价（如 512890）是市场交易价，也不等于指数精确值。
+21. **`--chart` 个股K线图的 A 股数据走 Tencent ifzq 而非 akshare**：`web.ifzq.gtimg.cn/appstock/app/fqkline/get` 返回前复权日线（qfqday 字段），格式 `[date, open, close, high, low, volume]`，volume 单位为手。美股走新浪 `US_MinKService.getDailyK`（1984年起），港股走 ifzq 的 `day` 字段（无前复权）。所有三个市场都需要 `Referer` 或特定参数（已内置）。
+22. **个股 `--chart` 依赖 matplotlib + numpy 且需要中文字体**：WenQuanYi Zen Hei 位于 `/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc`。需 `fm.fontManager.addfont()` + `plt.rcParams["font.family"]` 注册。缺少时中文显示为方块。
+23. **Tencent ifzq 对 A 股返回 151-180 条 qfqday 数据**：即使 request datalen=180+，实际返回约150条（受限于数据存储）。`_fetch_stock_history` 请求150天确保能截取近90个交易日。不足90日时自动用 `len(closes)//2` 周期计算均线（如 45日）。
 
 ## Verification Checklist
 
@@ -258,6 +370,16 @@ A股和美股关键区别：**A股涨跌幅/最高/最低在索引 31-34，美�
 - [ ] `--sector all --top5` 显示涨跌前5名
 - [ ] `--sector 半导体` 模糊匹配到 "第三代半导体"
 - [ ] 输入未知代码（如"XXXX"）返回友好错误提示
+- [ ] 用户问美股夜盘/盘前/期货数据 → 先给NDX收盘快照，再坦诚说明数据局限
+- [ ] 用户问NQ期货 → 告知当前环境无CME期货数据源，不可在非交易时段获取精确盘前价
+- [ ] `--chart` A 股/美股/港股各测一次，确认K线图正确生成（含MA20/MA90、成交量、最高/最低标注）
+- [ ] `--chart` 配合 A 股名称搜索（如"鹏鼎控股 --chart"）正常走通
+- [ ] `--chart` 不会影响已有的 `--history --chart`（两套图表逻辑独立）
+- [ ] 中文字体渲染正常，无 matplotlib CJK missing glyph 警告
+- [ ] 动态参数格式 `"002938,K120,[MA20,MA45,MA120]"` 正确解析并生成对应K线图
+- [ ] 动态参数缺省测试：`"002938,K120"`（无MA）、`"002938,[MA10,MA30]"`（无K天数）
+- [ ] 输出文件按参数动态命名，如 `002938_K120_MA20_MA45_MA120.png`
+- [ ] 输出路径为 skill 目录下的 `charts/` 文件夹，非 /tmp
 
 ## 美股指数历史行情分析 (--history)
 
@@ -711,3 +833,4 @@ print(f'    最深：{combined[-1][0]}({combined[-1][1]}) {combined[-1][2]:+.2f}
 - `references/fund-api.md` — 天天基金净值 API（基金实时估算净值）
 - `references/charting.md` — matplotlib 暗色主题 K 线图生成（含 --chart 自动化用法）
 - `references/etf-mapping.md` — 板块→主题ETF映射表（50+概念/行业），用于收盘日报推荐
+- `references/ifzq-api.md` — Tencent ifzq API 文档（A股/港股历史K线数据格式和注意事项）

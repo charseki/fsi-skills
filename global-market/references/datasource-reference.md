@@ -161,20 +161,23 @@ records = json.loads(match.group())
 
 ---
 
-## 腾讯 K 线 API (web.ifzq.gtimg.cn)
+## 腾讯 ifzq API (web.ifzq.gtimg.cn) — A股/港股历史K线
 
-**端点**: `GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={code},day,,,{count},qfq`
+**端点**: `GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={prefix}{code},day,,,{count},qfq`
 
-**用途**: 获取历史日 K 线数据。支持 A 股（sh/sz 前缀）和部分美股指数。
+**用途**: 获取 A 股和港股历史日 K 线数据。美股历史走新浪 US_MinKService。
 
-**指数支持情况** (腾讯云实测):
-| 代码 | 状态 | 数据量 |
-|------|------|--------|
-| `us.DJI` | ✅ 道琼斯完整日K | 320条 |
-| `usINX` | ❌ 仅返回最新1天 | N/A |
-| `usNDX` | ❌ 仅返回最新1天 | N/A |
+**前缀规则**:
 
-**注意**: 此 API 对美股指数的支持有限，仅 DJI 有完整数据。建议使用新浪美股 API 获取指数历史数据。
+| 市场 | 前缀 | 示例 | 数据字段 | 说明 |
+|------|------|------|----------|------|
+| A股-上海 | `sh` | `sh600519` | `qfqday` (前复权) | ✅ 完整, 推荐 |
+| A股-深圳 | `sz` | `sz002938` | `qfqday` (前复权) | ✅ 完整, 推荐 |
+| 港股 | `hk` | `hk00700` | `day` (无前复权) | ✅ 完整 |
+
+**参数说明**:
+- `count`: 日历天数（非交易日数）。A 股请求 `count=150` 约得 90-100 条交易日数据
+- `qfq`: 前复权参数（必须保留）
 
 **响应格式**:
 ```json
@@ -182,14 +185,44 @@ records = json.loads(match.group())
   "code": 0,
   "msg": "",
   "data": {
-    "code": {
+    "sh600519": {
+      "qfqday": [
+        ["2026-01-05", "1385.000", "1426.000", "1431.880", "1385.000", "70949.000"]
+        //  [0:date,     1:open,   2:close,  3:high,    4:low,     5:volume       ]
+      ],
       "day": [
-        ["2025-02-07", "44762.57", "44303.40", "44857.11", "44279.78", "552519093.00"],
-        // [date, open, close, high, low, volume]
+        ["2026-01-05", "1385.000", "1426.000", "1431.880", "1385.000", "70949.000"]
       ]
     }
   }
 }
 ```
 
-**字段索引**: `[日期, 开盘, 收盘, 最高, 最低, 成交量]`
+**字段索引** (重要!):
+| 索引 | 字段 | 说明 |
+|------|------|------|
+| 0 | date | 日期 `YYYY-MM-DD` |
+| 1 | **open** | 开盘价 ⚠️ 注意 close 在索引2, 不是1 |
+| 2 | **close** | 收盘价 |
+| 3 | high | 最高价 |
+| 4 | low | 最低价 |
+| 5 | volume | 成交量（A股=手, 港股=股） |
+
+**数据获取代码**:
+```python
+resp = _HTTP.get(
+    f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    f"?param=sz002938,day,,,150,qfq",
+    timeout=15
+)
+data = resp.json()
+# A 股
+records = data["data"]["sz002938"]["qfqday"]
+# 港股
+records = data["data"]["hk00700"]["day"]
+```
+
+**注意事项**:
+- `qfqday` 仅对 A 股有效；港股数据在 `day` 字段
+- `close` 在索引 2（不是索引 1），**容易混淆**
+- 该 API 不支持美股个股历史 — 美股走新浪 US_MinKService

@@ -16,3 +16,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 /tmp/
+
+# Chart images (auto-generated)
+/global-market/charts/

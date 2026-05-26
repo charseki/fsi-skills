@@ -159,6 +159,8 @@ run.py --history COMP        # NASDAQ Composite
 - 基金净值推荐：每个板块自动匹配对应主题基金（如 CPO→022365 永赢科技），展示基金当日预估涨跌幅
 - 板块→基金映射表见 `global-market/references/etf-mapping.md`
 - 历史净值数据见 `global-market/references/fund-nav-history.csv`（51764条，用于回测统计）
+- ⚠️ 板块涨跌与基金净值方向可能不一致（主动型基金持仓偏差），如实展示即可
+- ⚠️ etf-mapping.md 为静态快照，收盘日报通过 fundgz API 实时获取盘中估算净值
 
 #### 批量查询
 

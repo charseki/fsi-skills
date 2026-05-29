@@ -83,6 +83,6 @@ https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=usAAPL,day,,,150,qfq
 ## 遗留问题
 
 1. **datalen 上限**：即使请求 200 天，实际返回约 150~180 条记录（A 股受存储限制）。请求 150 天通常能覆盖 90 个交易日。
-2. **qfqday 仅 A 股有**：港股只有 `day`（不复权），美股也只有 `day`。A 股若无 qfqday 字段，可回退到 `day`。
+2. **qfqday 仅 A 股旧股/老ETF有，次新ETF和港股/美股只有`day`**：港股只有 `day`（不复权），美股也只有 `day`。A 股部分近年新上市的ETF（如 560860 工业有色ETF万家、深交所ETF）可能没有 `qfqday` 前复权数据，只有 `day`。必须 try/except 降级获取：`records = d.get('qfqday') or d.get('day')`。次新股也可能无 qfqday。
 3. **网络稳定性**：腾讯云环境下工作正常，但非腾讯云环境可能存在 DNS 解析问题（如 `web.ifzq.gtimg.cn` 指向 CDN，部分海外 IP 可能被限流）。
 4. **非交易时段返回最近收盘**：与 qt.gtimg.cn 行为一致。

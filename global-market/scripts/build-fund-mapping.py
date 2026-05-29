@@ -101,6 +101,9 @@ def compute_stats(df):
     """Compute YTD, 1w, 1m, 3m changes from historical NAV DataFrame."""
     if df is None or len(df) < 2:
         return {}
+    # Ensure 净值日期 is Timestamp for safe comparisons
+    if '净值日期' in df.columns:
+        df['净值日期'] = pd.to_datetime(df['净值日期'])
     last = df.iloc[-1]
     first = df.iloc[0]
     latest = float(last['单位净值'])
@@ -196,7 +199,8 @@ def build():
             stats = compute_stats(hist) if hist is not None else {}
 
             dwjz = curr.get('dwjz') if curr else None
-            gszzl = curr.get('gszzl') if curr else None
+            gszzl_raw = curr.get('gszzl') if curr else None
+            gszzl = float(gszzl_raw) if gszzl_raw is not None else None
             line = f"| {sector} | {code} | {name} | {dwjz or '—'} | {f'{gszzl:+.2f}' if gszzl is not None else '—'} "
             for k in ['w1_chg', 'm1_chg', 'm3_chg', 'ytd_chg']:
                 v = stats.get(k)

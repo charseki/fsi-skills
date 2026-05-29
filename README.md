@@ -9,10 +9,10 @@ fsi/
 ├── global-market/          # 全球金融市场速查技能
 │   ├── SKILL.md            # 技能定义文档（版本 1.1.0）
 │   ├── scripts/
-│   │   ├── run.py              # 主查询脚本（个股/基金/外汇/指数/板块/K线图）
+│   │   ├── run.py              # 主查询脚本（个股/基金/外汇/指数/板块/K线图/回撤折线图）
 │   │   └── build-fund-mapping.py  # 板块→基金映射构建脚本
-│   ├── charts/                 # 运行时生成的K线图（自动创建，gitignored）
-│   │   └── *.png               # 按参数动态命名，如 002938_K120_MA20_MA45_MA120.png
+│   ├── charts/                 # 运行时生成的K线图 + 回撤折线图（自动创建，gitignored）
+│   │   └── *.png               # 按参数动态命名，如 002938_K120_MA20_MA45_MA120.png / 007467_HC30.png
 │   ├── assets/                 # 静态资源
 │   │   └── stock-chart-preview.png  # 个股K线效果预览图
 │   └── references/
@@ -38,7 +38,7 @@ fsi/
 
 **版本：** v1.1.0
 
-一键查询 A 股、美股、港股、外汇、基金的实时行情，以及 A 股概念/行业板块涨跌幅，自动识别市场并路由到对应数据源。支持**个股K线趋势图**（可自定义K线天数和均线列表），K线颜色遵循各地惯例（亚洲红涨绿跌 / 欧美绿涨红跌）。
+一键查询 A 股、美股、港股、外汇、基金的实时行情，以及 A 股概念/行业板块涨跌幅，自动识别市场并路由到对应数据源。支持**个股K线趋势图**（可自定义K线天数和均线列表）和**回撤折线图 (HC)**，K线颜色遵循各地惯例（亚洲红涨绿跌 / 欧美绿涨红跌）。
 
 #### 核心功能
 
@@ -50,6 +50,7 @@ fsi/
 | 美股指数历史分析 | `run.py --history NDX/SPX/DJI/COMP` | 新浪美股 |
 | 指数K线图 | `run.py --history SPX --chart` | matplotlib |
 | **个股K线趋势图** | **`run.py 600519 --chart` / 动态参数** | **Tencent ifzq / 新浪美股** |
+| **回撤折线图 (HC)** | **`run.py "007467,HC30"` / `"茅台,HC30"`** | **akshare 基金净值 / ifzq** |
 | 概念板块涨跌幅 | `run.py --sector "CPO,机器人,存储芯片"` | 同花顺资金流向 |
 | 行业板块排行 | `run.py --sector all --industry` | 新浪行业 |
 | 板块速览 | `run.py --sector all --top5` | 同花顺资金流向 |
@@ -81,6 +82,32 @@ run.py "00700,K200"
 ![stock-chart-preview](global-market/assets/stock-chart-preview.png)
 
 **数据源：** A股/港股历史K线 → Tencent ifzq API（前复权，`web.ifzq.gtimg.cn`），美股历史 → 新浪 US_MinKService API。
+
+#### 回撤折线图 (HC — Drawdown)
+
+输入 `<代码>,HC<N>` 生成近 N 个交易日（基金用单位净值，股票用前复权收盘价）的回撤折线图，自动标注最大回撤点和当前回撤：
+
+```bash
+# 基金回撤（30个交易日）
+run.py "007467,HC30"      # 华泰柏瑞红利低波联接C 30日回撤
+
+# 基金回撤（90个交易日 ≈ 3个月）
+run.py "013275,HC90"      # 富国中证煤炭C 90日回撤
+
+# A 股回撤
+run.py "600519,HC30"      # 茅台 30日回撤
+run.py "茅台,HC30"         # 名称搜索自动解析
+
+# 美股 / 港股回撤
+run.py "AAPL,HC60"        # Apple 60日回撤
+run.py "00700,HC30"       # 腾讯 30日回撤
+```
+
+- 基金走 `akshare.fund_open_fund_info_em()` 历史净值，股票走 Tencent ifzq / 新浪 K 线
+- 6 位数字自动先试基金再试 A 股，无需手动指定类型
+- 输出至 `charts/{code}_HC{days}.png`（暗色主题，~100-180KB, 150dpi）
+- 同时输出文字摘要：当前回撤 + 区间最大回撤百分比
+- 支持中英文逗号：`"007467,HC30"` / `"007467，HC30"`
 
 #### 美股指数历史分析 + K线图
 
@@ -171,7 +198,7 @@ run.py "茅台,AAPL,00700,USD/CNY"
 
 #### 环境适配
 
-专为腾讯云环境优化 — 规避了东方财富 API 的拦截。实时行情走腾讯行情（`qt.gtimg.cn`）/ 新浪港股（`hq.sinajs.cn`），历史K线走 Tencent ifzq API（`web.ifzq.gtimg.cn`）和 新浪美股 US_MinKService API。仅依赖 `requests` 和 `akshare`。
+专为腾讯云环境优化 — 规避了东方财富 API 的拦截。实时行情走腾讯行情（`qt.gtimg.cn`）/ 新浪港股（`hq.sinajs.cn`），历史K线走 Tencent ifzq API（`web.ifzq.gtimg.cn`）和 新浪美股 US_MinKService API，基金历史净值走 akshare `fund_open_fund_info_em()`。仅依赖 `requests` 和 `akshare`。
 
 ## 使用前提
 

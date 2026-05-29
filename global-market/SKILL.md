@@ -29,10 +29,10 @@ metadata:
 global-market/
 ├── SKILL.md                # 本技能定义文档
 ├── scripts/
-│   ├── run.py              # 主查询脚本（个股/基金/外汇/指数/板块/K线图）
+│   ├── run.py              # 主查询脚本（个股/基金/外汇/指数/板块/K线图/回撤折线图）
 │   └── build-fund-mapping.py  # 板块→基金映射构建脚本（生成 etf-mapping.md + fund-nav-history.csv）
-├── charts/                 # 运行时生成的K线图（自动创建）
-│   └── *.png               # 按参数动态命名，如 002938_K120_MA20_MA45_MA120.png
+├── charts/                 # 运行时生成的K线图 + 回撤折线图（自动创建）
+│   └── *.png               # 按参数动态命名，如 002938_K120_MA20_MA45_MA120.png / 007467_HC30.png
 ├── assets/                 # 静态资源
 │   └── stock-chart-preview.png  # 个股K线效果预览图
 └── references/
@@ -41,7 +41,8 @@ global-market/
     ├── datasource-reference.md  # 各数据源字段详解
     ├── environment.md           # 腾讯云环境适配说明
     ├── etf-mapping.md           # 板块→主题基金映射表（37板块48基金，含最新净值+多周期涨跌幅）
-    ├── fund-api.md              # 天天基金净值 API
+    ├── fund-api.md              # 天天基金净值 API（盘中估算）
+    ├── fund-history-akshare.md  # 基金历史净值批量采集（akshare fund_open_fund_info_em）
     ├── fund-nav-history.csv     # 全部基金历史净值数据（51764+条），用于统计分析和回测
     ├── ifzq-api.md              # Tencent ifzq API（A股/港股历史K线）
     ├── lof-mapping.md           # 用户提供的板块→LOF/联接基金原始映射
@@ -56,6 +57,7 @@ global-market/
 - 用户说"全球市场"查看概览
 - 用户输入股票代码（A股6位、美股字母、港股5位）、基金代码（6位，如016814）或外汇关键词
 - 用户查询批量**板块/行业/概念**涨跌幅（如"帮我查下CPO、机器人、有色金属这几个板块"）
+- 用户输入 `<代码>,HC<N>` 格式查询近 N 个交易日的**回撤走势**（如 `007467,HC30`、`茅台,HC30`）
 
 ## Procedure
 
@@ -125,6 +127,31 @@ global-market/
 
    ![stock-chart-preview](assets/stock-chart-preview.png)
 
+**回撤折线图 (HC)**：查询基金/A股/美股/港股近 N 个交易日的回撤走势，自动计算最大回撤并生成折线图：
+
+   ```bash
+   # 基金回撤（30个交易日）
+   ~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py "007467,HC30"
+
+   # 基金回撤（90个交易日 ≈ 3个月）
+   ~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py "013275,HC90"
+
+   # A股回撤
+   ~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py "600519,HC30"
+   ~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py "茅台,HC30"
+
+   # 美股回撤
+   ~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py "AAPL,HC60"
+
+   # 港股回撤
+   ~/venv/bin/python3 ~/.hermes/skills/fsi/global-market/scripts/run.py "00700,HC30"
+   ```
+
+   - 6 位数字代码自动先试基金（天天基金 → akshare 历史净值）再试 A 股（ifzq K线）
+   - 支持中文/英文逗号：`"007467,HC30"` / `"007467，HC30"`
+   - 输出图片存入 `charts/` 文件夹，按参数动态命名如 `007467_HC30.png`（~100-180KB, 150dpi）
+   - 同时输出文字摘要：当前回撤 + 区间最大回撤百分比
+
  **板块查询**：查询 A 股概念/行业板块涨跌幅
 
    ```bash
@@ -161,6 +188,18 @@ global-market/
   → detect_market() 对每个输入判断
   → batch_query() 并行（实际串行）查询各市场
   → 分割线分隔结果
+
+用户输入 "007467,HC30"
+  → parse_drawdown_params() → ("007467", 30)
+  → 6位数字 → 先试基金 → query_fund("007467") ✅ 基金名
+  → _fetch_fund_nav_history("007467", days=60) → akshare 历史净值
+  → generate_drawdown_chart() → 回撤折线图 + 文字摘要
+
+用户输入 "600519,HC30"
+  → 6位数字 → query_fund("600519") ❌ 不是基金
+  → _resolve_a_code("600519") → ("sh", "600519")
+  → _fetch_stock_history("a", "600519", days=60) → ifzq K线
+  → generate_drawdown_chart() 使用 close 价格 → 回撤折线图
 ```
 
 ## 市场自动识别
@@ -209,6 +248,7 @@ global-market/
 | **外汇** | open.er-api.com | `GET /v6/latest/{base}` | requests |
 | **A股名称→代码** | 新浪建议 | `suggest3.sinajs.cn/suggest/?key={name}&type=11,12` | requests |
 | **CSI H-series** | 天天基金 | `fundgz.1234567.com.cn/js/{code}.js`（通过跟踪基金推算） | requests |
+| **基金历史净值** | akshare | `ak.fund_open_fund_info_em(symbol=code, indicator='单位净值走势')` | akshare（用于回撤折线图） |
 | **证券名称→代码** | Tencent smartbox | `smartbox.gtimg.cn/s3/?v=2&q={name}&t=all`（返回 GBK 编码） | curl + iconv |
 | **指数历史** | 新浪美股 | `stock.finance.sina.com.cn/usstock/api/...`（需 Referer） | requests |
 
@@ -364,6 +404,7 @@ A股和美股关键区别：**A股涨跌幅/最高/最低在索引 31-34，美�
 20. **CSI 指数涨跌幅为推算值，非精确值**：通过基金 `gszzl` 字段推算的指数涨跌幅可能存在 ±0.05% 的误差。ETF 实时价（如 512890）是市场交易价，也不等于指数精确值。
 21. **`--chart` 个股K线图的 A 股数据走 Tencent ifzq 而非 akshare**：`web.ifzq.gtimg.cn/appstock/app/fqkline/get` 返回前复权日线（qfqday 字段），格式 `[date, open, close, high, low, volume]`，volume 单位为手。美股走新浪 `US_MinKService.getDailyK`（1984年起），港股走 ifzq 的 `day` 字段（无前复权）。所有三个市场都需要 `Referer` 或特定参数（已内置）。
 22. **个股 `--chart` 依赖 matplotlib + numpy 且需要中文字体**：WenQuanYi Zen Hei 位于 `/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc`。需 `fm.fontManager.addfont()` + `plt.rcParams["font.family"]` 注册。缺少时中文显示为方块。
+23. **部分新ETF/次新股没有 qfqday（前复权）数据，只有 day（未复权）**：一些近年上市的ETF（如 560860 工业有色ETF万家）在 Tencent ifzq API 返回的数据结构中只有 `day` 字段，没有 `qfqday`。获取K线数据时必须 try/except 降级：`records = d.get('qfqday') or d.get('day')`。直接硬编码 `d['qfqday']` 会引发 KeyError。`run.py` 的 `_fetch_stock_history()` 已内置此降级逻辑，但编写独立的量化分析脚本时容易遗漏此检查。港股 ifzq 返回的始终是 `day`（港股无前复权）。
 25. **LOF基金代码不能直接生成K线图**：6位基金代码（如013275）通过天天基金API可查净值，但Tencent ifzq API没有对应K线数据。使用动态参数格式 `"013275,K120,[MA30,MA90,MA120]"` 时，脚本先查出基金行情文字（✅），然后尝试拉K线失败（❌ 0条数据）。正确做法：先查基金→找对应场内ETF（如 013275→515220 煤炭ETF）→用ETF代码重试。
 27. **概念名称→基金映射需手动跨表**：akshare 返回的概念名长（如"共封装光学(CPO)"、"机器人概念"），而 lof-mapping.md 使用短名（"CPO"、"机器人"）。收盘日报代码中的 `FUND_MAP` 字典已包含完整跨映射（~50条），新增板块时需同时维护两个名称的映射关系。参见 SKILL.md 【收盘日报推送格式】章节的 `FUND_MAP` 代码块。
 28. **`ak.fund_open_fund_info_em()` 可在腾讯云工作**：这是少数在 Tencent Cloud 仍可用的 EastMoney 后端 API。用于批量获取基金历史净值数据。单次约 1-2 秒，连续调用需加 `time.sleep(0.5)` 避免限流。
@@ -372,6 +413,9 @@ A股和美股关键区别：**A股涨跌幅/最高/最低在索引 31-34，美�
 31. **板块→基金映射每日更新**：`etf-mapping.md` 中的最新净值和涨跌幅为静态快照（运行 `build-fund-mapping.py` 时生成），非实时数据。每日收盘日报的 `query_fund_chg()` 通过 fundgz API 获取的是**盘中估算净值**（`gszzl`），非官方收盘净值。官方净值（`dwjz`）通常在 19:00-22:00 更新。
 32. **板块涨跌与基金净值方向可能不一致**：基金持仓可能不完全跟踪对应板块指数（如主动管理型基金的重仓股与板块成分股有偏差），因此板块涨跌 +5% 而对应基金可能只 +1% 甚至为负。这是正常现象，如实展示即可。
 33. **`fund-nav-history.csv` 用于回测而非滚动补充**：该文件是历史数据的静态快照，用于统计分析（相关性、最大回撤、年化收益率等）。如需追加每日新数据，运行 `build-fund-mapping.py` 重新生成。
+34. **HC 参数 `,HC<N>` 必须写在末尾**：格式 `<代码>,HC<N>`，HC 在逗号后。`HC30 007467` 不会被识别。支持中文逗号：`"007467，HC30"`。
+35. **HC 回撤依赖 akshare 基金净值或 ifzq K线**：基金走 `ak.fund_open_fund_info_em()`（首次调用延迟约 2-3 秒），股票走 Tencent ifzq API。盘中实时回撤不可用，计算基于历史收盘价/净值。
+36. **HC 六位代码自动分流**：6 位数字如 `007467` 先试基金（天天基金 → akshare 历史净值），失败后自动降级为 A 股 ifzq K线。无需手动指定类型。
 
 ## Verification Checklist
 
@@ -403,6 +447,15 @@ A股和美股关键区别：**A股涨跌幅/最高/最低在索引 31-34，美�
 - [ ] 输出路径为 skill 目录下的 `charts/` 文件夹，非 /tmp
 - [ ] `--chart` 时 K 线颜色正确：A 股红涨绿跌 <-> 美股绿涨红跌（互为反转）
 - [ ] `--chart` 时 A 股成交量柱标签显示"成交额(百万元)"，美股显示"Volume"
+- [ ] HC 基金回撤：`run.py "007467,HC30"` → 基金名 + 30日回撤图
+- [ ] HC 基金回撤 90日：`run.py "013275,HC90"` → 约3个月回撤图
+- [ ] HC A股代码：`run.py "600519,HC30"` → 茅台30日回撤图
+- [ ] HC A股名称搜索：`run.py "茅台,HC30"` → 同上（名称自动解析）
+- [ ] HC 美股：`run.py "AAPL,HC60"` → Apple 60日回撤图
+- [ ] HC 港股：`run.py "00700,HC30"` → 腾讯30日回撤图
+- [ ] HC 输出路径正确：`charts/{code}_HC{days}.png`
+- [ ] HC 数据不足时友好提示（新基金 < 3条）
+- [ ] HC 中文逗号支持：`"007467，HC30"` 也能正确识别
 
 ## 美股指数历史行情分析 (--history)
 
@@ -695,7 +748,163 @@ curl -s "https://qt.gtimg.cn/q=sh512890" | iconv -f GBK -t UTF-8
 - **冷门指数可能无跟踪基金**：部分冷门 CSI 指数没有对应的公开 ETF/联接基金
 - **每天首次查**：smartbox 结果稳定，key 映射（指数→基金代码）可在首次查询后存入记忆复用
 
+### 用户明确要「指数本身」时的处理（重要！）
+
+⚠️ **当用户明确说「我要查的是指数 H30269」「不是基金」时，不要只甩基金/ETF数据，须分开呈现：**
+
+**诚实说明现状 → 用ETF数据近似 → 留后续选项**
+
+格式模板：
+
+```
+H30269（中证红利低波动指数）无直接实时接口
+
+目前环境限制：
+❌ 腾讯行情 qt.gtimg.cn → 不覆盖 H 系列指数
+❌ 新浪 hq.sinajs.cn → 返回空
+❌ 东方财富 push2 → 腾讯云拦截
+❌ 中证官网 csindex.com.cn → Vue SPA，需 JS 渲染（Chrome 沙箱限制）
+
+通过跟踪ETF近似推算：
+📈 ETF 512890（红利低波ETF华泰柏瑞）最新价 ¥X.XXX 📈 +X.XX%
+📈 联接基金 007467 估算净值 ¥X.XXXX 📈 +X.XX%
+
+预估值：约 +X.X%~+X.X%
+```
+
+**关键原则：**
+- ETF/基金数据是**推算值**，不是指数精确值，必须明确标注「近似」「估算」
+- 列出已尝试的数据源及其状态，让用户知道已尽力查过
+- 基金 `dwjz`（官方净值）是收盘后公布的，盘中用 `gsz`（估算净值）时明确说是「盘中估算」
+- 如需更精确数据，建议用户通过同花顺、东方财富APP、Wind等专业终端查看
+- 对于 CSI 官网 csindex.com.cn，当前环境 Chrome 因缺乏 `--no-sandbox` 无法启动，无法渲染其 Vue SPA 页面
+
+### 已核实不可用的 H-series 数据源列表
+
+当用户追问「为什么查不到」或要求解释时，可引用以下核实记录：
+
+| 数据源 | 端点 | 结果 | 日期 |
+|--------|------|------|------|
+| 中证官网 API | `/csindex-home/api/index/quote?indexCode=H30269` | 404 Not Found | 2026-05-29 |
+| 中证官网 API | `/csindex-home/api/index/real?indexCode=H30269` | 404 Not Found | 2026-05-29 |
+| 中证官网 API | `/csindex-home/api/index/quote/v1?indexCode=H30269` | 404 Not Found | 2026-05-29 |
+| 中证官网 API | `/csindex-home/api/index/v1/realTime?indexCode=H30269` | 404 Not Found | 2026-05-29 |
+| 中证官网 API | `/csindex-home/api/search/searchIndexInfo?searchField=H30269` | 404 Not Found | 2026-05-29 |
+| 新浪 CSI API | `/csi/api/public/index_info.php?code=H30269` | File not found (404) | 2026-05-29 |
+| 天天基金 | `fundgz.1234567.com.cn/js/H30269.js` | 404 Not Found | 2026-05-29 |
+| 同花顺 | `d.10jqka.com.cn/v2/realhead/hq/H30269/last.js` | 404 Not Found | 2026-05-29 |
+| 腾讯 smartbox `t=zs` | `smartbox.gtimg.cn/s3/?q=H30269&t=zs` | 空结果 | 2026-05-29 |
+| 中证 OSS CDN | `csi-web-cdn.oss-cn-shanghai.aliyuncs.com/index-detail/data/H30269.json` | NoSuchBucket | 2026-05-29 |
+| 东方财富 push2 | `push2.eastmoney.com/api/qt/stock/get?secid=1.H30269` | rc:102 (no data) | 2026-05-29 |
+
+⚠️ **不要每次重复验证这些死路**。记忆已存以上结论，直接引用即可。
+
 <!-- 板块/行业行情查询旧章节已合并到上方 ## A股板块查询 (--sector) -->
+
+## 回撤折线图 (HC — Drawdown)
+
+### When to Use
+- 用户输入 `<代码>,HC<N>` 格式查询某标的近 N 个交易日的回撤走势
+- 用户说「看下 XX 回撤」「XX 最近回撤了多少」
+- 分析基金/股票的回撤幅度和最大回撤发生时间
+
+### 用法
+
+```bash
+# 基金回撤（30个交易日）
+~/venv/bin/python3 run.py "007467,HC30"
+# → 华泰柏瑞中证红利低波ETF联接C, 30日回撤折线图
+
+# 基金回撤（90个交易日 ≈ 3个月）
+~/venv/bin/python3 run.py "013275,HC90"
+# → 富国中证煤炭指数(LOF)C, 90日回撤折线图
+
+# A股回撤
+~/venv/bin/python3 run.py "600519,HC30"
+# → 贵州茅台, 30日回撤折线图
+
+# A股名称搜索 + 回撤
+~/venv/bin/python3 run.py "茅台,HC30"
+# → 同上（名称搜索自动解析）
+
+# 美股回撤
+~/venv/bin/python3 run.py "AAPL,HC60"
+# → Apple, 60日回撤折线图
+
+# 港股回撤
+~/venv/bin/python3 run.py "00700,HC30"
+# → 腾讯控股, 30日回撤折线图
+```
+
+### 数据流示意
+
+```
+用户输入 "007467,HC30"
+  → parse_drawdown_params() → ("007467", 30)
+  → detect_market("007467") → market="a"
+  → 6位数字 → 先试 query_fund("007467")
+    → 天天基金 API 返回基金名 ✓
+    → _fetch_fund_nav_history("007467", days=60)
+      → akshare fund_open_fund_info_em() 获取历史净值
+      → 取最近60条 → 取最近30条
+  → generate_drawdown_chart()
+    → 计算 drawdown = (nav - peak) / peak * 100
+    → 暗色主题折线图 + 红色填充区域
+    → 标注最大回撤点 + 当前回撤
+    → 输出 charts/007467_HC30.png
+
+用户输入 "600519,HC30"
+  → 6位数字 → query_fund("600519") ❌ 不是基金
+  → _resolve_a_code("600519") → ("sh", "600519")
+  → _fetch_stock_history("a", "600519", days=60)
+    → Tencent ifzq API 获取日K线
+    → 取最近60条 → 取最近30条
+  → generate_drawdown_chart() 使用 close 价格
+```
+
+### 数据源
+
+| 类型 | 数据源 | 说明 |
+|------|--------|------|
+| **基金净值** | akshare `fund_open_fund_info_em()` | 全量历史净值，腾讯云已验证可用 |
+| **A股日K线** | Tencent ifzq API (qfqday 前复权) | 同 `--chart` 个股K线数据源 |
+| **美股日K线** | 新浪 US_MinKService API | 同 `--chart` 个股K线数据源 |
+| **港股日K线** | Tencent ifzq API (day) | 同 `--chart` 个股K线数据源 |
+
+### 输出
+
+- **图表文件**：`charts/{代码}_HC{days}.png`（暗色主题，~100-180KB, 150dpi）
+- **文字摘要**：当前回撤 + 区间最大回撤百分比
+
+图表特性：
+- 红色填充区域：回撤幅度可视化
+- 红色箭头标注：最大回撤点（含日期）
+- 黄色文字标注：当前回撤
+- 零线：参考基线
+
+### Common Pitfalls
+
+1. **基金回撤依赖 akshare**：`ak.fund_open_fund_info_em()` 需要安装 akshare。已在腾讯云验证可用，但首次调用约延迟 2-3 秒（pandas 加载）。
+2. **HC 参数必须写在末尾**：格式 `<代码>,HC<N>`，HC 必须在逗号后。`HC30 007467` 不会被识别。
+3. **回撤计算基于净值/收盘价**：基金用单位净值（非盘中估算值），股票用前复权收盘价。盘中实时回撤不可用。
+4. **交易日 vs 自然日**：HC30 指 30 个**交易日**，约等于 6 个自然周（含周末）。
+5. **基金净值仅在交易日更新**：周末查询返回最近交易日数据。新基金历史数据可能不足指定天数。
+6. **LOB 基金代码自动走基金数据源**：6位代码（如 013275）先试天天基金→成功则走 NAV 历史→不成功则试 A 股 ifzq。无需手动指定类型。
+7. **`--chart` 和 `HC` 互斥**：同时输入 `007467,HC30 --chart` 时，HC 模式优先，--chart 被忽略。
+
+### Verification Checklist
+
+- [ ] 基金代码 + HC：`run.py "007467,HC30"` → 基金名 + 30日回撤图
+- [ ] 基金代码 + HC90：`run.py "013275,HC90"` → 90日回撤图（约3个月）
+- [ ] A股代码 + HC：`run.py "600519,HC30"` → 贵州茅台30日回撤图
+- [ ] A股名称 + HC：`run.py "茅台,HC30"` → 同上（名称搜索解析）
+- [ ] 美股代码 + HC：`run.py "AAPL,HC60"` → Apple 60日回撤图
+- [ ] 港股代码 + HC：`run.py "00700,HC30"` → 腾讯30日回撤图
+- [ ] 输出文件路径正确：`charts/{code}_HC{days}.png`
+- [ ] 图片为暗色主题，中文字体渲染正常
+- [ ] 无最大回撤时图表正常显示（净值一直涨的情况）
+- [ ] 数据不足时（新基金 < 3条）友好提示
+- [ ] `--help` 显示 HC 用法示例
 
 ## 技术面量化分析（金叉/死叉/MACD 信号）
 
@@ -860,176 +1069,81 @@ curl -s "https://smartbox.gtimg.cn/s3/?v=2&q=煤炭&t=all" | iconv -f GBK -t UTF
 > 基金净值数据来自天天基金 API (fundgz.1234567.com.cn)，板块→基金映射见 `references/etf-mapping.md`。
 > 如需历史净值数据统计，见 `references/fund-nav-history.csv`。
 
-### 生成方式（Python 内联，非 run.py）
+### 生成方式（主推：build-fund-mapping.py 管道）
 
-收盘日报 cron job 不直接调用 run.py，而是使用以下 Python 代码内联生成：
+**用户偏好**：使用 `lof-mapping.md` 中的 37 个板块、48 只基金映射，而非全量 A 股 387+49 板块。
 
-```python
-import akshare as ak
-import requests as req
-import re, json
-from datetime import datetime
+**两步流程**：
 
-# ========== 板块→基金映射（基于 lof-mapping.md，完整映射见 references/etf-mapping.md） ==========
-# KEY: 同花顺概念/新浪行业名称 → (基金代码, 基金名称, lof板块名)
-FUND_MAP = {
-    '共封装光学(CPO)': ('022365', '永赢科技智选混合发起C', 'CPO'),
-    'CPO概念': ('022365', '永赢科技智选混合发起C', 'CPO'),
-    '半导体': ('015968', '永赢半导体产业智选混合发起C', '半导体'),
-    '存储芯片': ('016874', '广发远见智选混合C', '存储芯片'),
-    '机器人概念': ('018125', '永赢先进制造智选混合发起C', '机器人'),
-    '人形机器人': ('018125', '永赢先进制造智选混合发起C', '机器人'),
-    '人工智能': ('012780', '博时移动互联混合C', '人工智能'),
-    '消费电子': ('018897', '易方达中证消费电子主题ETF发起式联接C', '消费电子'),
-    '新能源汽车': ('501058', '汇添富中证新能源汽车产业C类(LOF)', '新能源汽车'),
-    '锂电池概念': ('022447', '前海开源周期精选混合C', '锂电池'),
-    '白酒概念': ('012414', '招商中证白酒指数C', '白酒'),
-    '黄金概念': ('004253', '国泰黄金ETF联接C', '黄金'),
-    '军工': ('013566', '华夏军工安全混合C', '军工'),
-    '煤炭概念': ('013275', '富国中证煤炭指数C', '煤炭'),
-    '有色金属': ('022167', '富国资源精选混合发起式C', '有色金属'),
-    '银行': ('001595', '天弘中证银行ETF联接C', '银行'),
-    '电力': ('016186', '广发中证全指电力ETF发起式联接C', '电力'),
-    '光伏概念': ('017766', '华夏兴和混合C', '光伏'),
-    '储能': ('014766', '中欧碳中和混合发起C', '储能'),
-    '稀土永磁': ('011036', '嘉实中证稀土产业ETF联接C', '稀土'),
-    '5G': ('002771', '安信新回报混合C', '5G'),
-    '航天': ('013566', '华夏军工安全混合C', '军工'),  # 航天→军工
-    '畜牧': ('012725', '国泰中证畜牧养殖ETF发起式联接C', '畜牧养殖'),
-    '养殖': ('012725', '国泰中证畜牧养殖ETF发起式联接C', '畜牧养殖'),
-    '农业': ('014064', '银华农业产业股票发起式C', '农业'),
-    '化工': ('020274', '富国中证细分化工产业ETF发起式联接C', '化工'),
-    '交通运输': ('012420', '广发价值领先混合C', '交通运输'),
-    '钢铁': ('025217', '永赢资源慧选混合发起式C', '钢铁'),
-    '红利低波': ('007467', '华泰柏瑞中证红利低波ETF联接C', '红利低波'),
-    '高股息精选': ('007467', '华泰柏瑞中证红利低波ETF联接C', '红利低波'),
-    '固态电池': ('014561', '东方汽车产业趋势混合C', '固态电池'),
-    '港股创新药': ('015916', '永赢医药创新智选混合发起C', '港股创新药'),
-    '港股消费': ('010350', '景顺长城品质长青混合A', '港股消费'),
-    '港股科技': ('024460', '华商致远回报C', '港股科技'),
-    '芯片概念': ('015968', '永赢半导体产业智选混合发起C', '半导体'),
-    '芯片': ('015968', '永赢半导体产业智选混合发起C', '半导体'),
-    '半导体材料': ('017811', '东方人工智能主题混合C', '半导体材料'),
-    '商业航天': ('015790', '永赢高端装备智选混合发起C', '商业航天'),
-    '锂矿': ('012710', '华夏核心成长混合C', '锂矿'),
-    '电网设备': ('025857', '华夏中证电网设备主题ETF发起式联接C', '电网设备'),
-    '贵金属': ('002207', '前海开源金银珠宝混合C', '贵金属'),
-    '算力租赁': ('005359', '东方阿尔法精选混合发起式C', '算力租赁'),
-    '通信技术': ('016371', '信澳业绩驱动混合C', '通信技术'),
-    '脑机接口': ('019414', '长城消费增值混合C', '脑机接口'),
-    '通信设备': ('016371', '信澳业绩驱动混合C', '通信技术'),
-    '5G概念': ('002771', '安信新回报混合C', '5G'),
-    '减速器': ('018125', '永赢先进制造智选混合发起C', '机器人'),
-    # 行业板块（新浪行业名称 → 基金映射）
-    '有色金属_行业': ('022167', '富国资源精选混合发起式C', '有色金属'),
-    '电力行业_行业': ('016186', '广发中证全指电力ETF发起式联接C', '电力'),
-    '银行_行业': ('001595', '天弘中证银行ETF联接C', '银行'),
-    '煤炭行业_行业': ('013275', '富国中证煤炭指数C', '煤炭'),
-    '钢铁_行业': ('025217', '永赢资源慧选混合发起式C', '钢铁'),
-    '农业_行业': ('014064', '银华农业产业股票发起式C', '农业'),
-    '化工行业_行业': ('020274', '富国中证细分化工产业ETF发起式联接C', '化工'),
-    '交通运输_行业': ('012420', '广发价值领先混合C', '交通运输'),
-    '国防军工_行业': ('013566', '华夏军工安全混合C', '军工'),
-    '半导体_行业': ('015968', '永赢半导体产业智选混合发起C', '半导体'),
-}
+#### 第一步：运行 build-fund-mapping.py 更新数据
 
-def find_fund(name, kind='概念'):
-    """查找板块对应的基金"""
-    key = name if kind == '行业' else name
-    # 行业板块加后缀以区分
-    search_key = f'{key}_行业' if kind == '行业' else key
-    
-    if search_key in FUND_MAP:
-        return FUND_MAP[search_key]
-    # 模糊匹配
-    for k, v in FUND_MAP.items():
-        if key in k or k in key:
-            return v
-    return None
-
-def query_fund_chg(code):
-    """通过天天基金API查询估算涨跌幅"""
-    try:
-        r = req.get(f'https://fundgz.1234567.com.cn/js/{code}.js', timeout=10)
-        if r.status_code == 200:
-            match = re.search(r'jsonpgz\((.+?)\)\s*;?\s*$', r.text)
-            if match:
-                data = json.loads(match.group(1))
-                gszzl = float(data.get('gszzl', 0) or 0)
-                name = data.get('name', '')
-                return gszzl, name
-    except:
-        pass
-    return None, None
-
-# 获取概念板块
-concept = ak.stock_fund_flow_concept()
-concept_list = [(row['行业'], '概念', row['行业-涨跌幅']) for _, row in concept.iterrows()]
-
-# 获取行业板块
-industry = ak.stock_sector_spot(indicator='新浪行业')
-industry_list = [(row['板块'], '行业', row['涨跌幅']) for _, row in industry.iterrows()]
-
-# 合并排序
-combined = concept_list + industry_list
-combined.sort(key=lambda x: x[2], reverse=True)
-
-ups = combined[:10]
-downs = combined[-10:]
-downs.reverse()
-
-# 统计数据
-up_count = sum(1 for _,_,c in combined if c > 0)
-down_count = sum(1 for _,_,c in combined if c < 0)
-flat_count = len(combined) - up_count - down_count
-
-today = datetime.now().strftime('%m月%d日(%a)')
-
-print(f'📊 A股板块基金收盘日报 — {today}')
-print()
-print(f'📈 涨幅 TOP 10（概念+行业）')
-for i, (name, typ, chg) in enumerate(ups, 1):
-    fund = find_fund(name, typ)
-    print(f'  {i}. {name}({typ}) 📈 {chg:+.2f}%')
-    if fund:
-        code, fname, sector = fund
-        fund_chg, _ = query_fund_chg(code)
-        if fund_chg is not None:
-            sym = '📈' if fund_chg >= 0 else '📉'
-            print(f'         🏷️ {fname}({code}) {sym} {fund_chg:+.2f}%')
-        else:
-            print(f'         🏷️ {fname}({code}) — 暂无净值')
-    else:
-        print(f'         🏷️ 无直接对应基金')
-print()
-print(f'📉 跌幅 TOP 10（概念+行业）')
-for i, (name, typ, chg) in enumerate(downs, 1):
-    fund = find_fund(name, typ)
-    print(f'  {i}. {name}({typ}) 📉 {chg:+.2f}%')
-    if fund:
-        code, fname, sector = fund
-        fund_chg, _ = query_fund_chg(code)
-        if fund_chg is not None:
-            sym = '📈' if fund_chg >= 0 else '📉'
-            print(f'         🏷️ {fname}({code}) {sym} {fund_chg:+.2f}%')
-        else:
-            print(f'         🏷️ {fname}({code}) — 暂无净值')
-    else:
-        print(f'         🏷️ 无直接对应基金')
-print()
-print(f'📋 概览：概念{len(concept_list)}个+行业{len(industry_list)}个｜上涨{up_count} 下跌{down_count} 平盘{flat_count}')
-print(f'    最高：{combined[0][0]}({combined[0][1]}) {combined[0][2]:+.2f}%')
-print(f'    最深：{combined[-1][0]}({combined[-1][1]}) {combined[-1][2]:+.2f}%')
+```bash
+source ~/venv/bin/activate && python3 ~/.hermes/skills/fsi/global-market/scripts/build-fund-mapping.py
 ```
 
-### 关键要求
+此脚本自动完成：
+1. 解析 `lof-mapping.md` 中所有板块→基金映射
+2. 通过 fundgz API 获取每只基金最新净值 + 预估涨跌幅
+3. 通过 akshare 获取全量历史净值数据
+4. 计算 YTD、近1周、近1月、近3月涨跌幅
+5. 写入 `references/etf-mapping.md` + `references/fund-nav-history.csv`
+
+#### 第二步：解析 etf-mapping.md 提取涨跌幅 TOP 10
+
+读取刚生成的 `references/etf-mapping.md`，解析 markdown 表格行提取（板块, 基金代码, 基金名称, 日涨跌%）。按日涨跌%排序，取 TOP 10 涨/跌。
+
+**在 cron job prompt 中的写法**：
+
+```
+执行以下步骤生成板块基金收盘日报：
+
+## 步骤1：运行 build-fund-mapping.py 更新数据
+
+执行命令：
+```bash
+source ~/venv/bin/activate && python3 ~/.hermes/skills/fsi/global-market/scripts/build-fund-mapping.py
+```
+
+## 步骤2：解析 etf-mapping.md 提取板块→基金→涨跌幅数据
+
+读取 /home/ubuntu/.hermes/skills/fsi/global-market/references/etf-mapping.md，解析映射表中的每一行，提取：
+- 板块名称、基金代码、基金名称、最新净值、日涨跌%(gszzl)
+
+## 步骤3：按日涨跌%排序，输出TOP10
+
+按日涨跌%从高到低排序，输出纯文本格式：
+
+📊 基金板块收盘日报 — {today}
+
+📈 涨幅 TOP 10
+  1. {板块名} 🏷️ {基金名称}({代码}) 📈 +X.XX%
+  2. ...
+  （共10条，每行一条）
+
+📉 跌幅 TOP 10
+  1. {板块名} 🏷️ {基金名称}({代码}) 📉 -X.XX%
+  2. ...
+  （共10条，每行一条）
+
+📋 概览：共{总数}只基金｜上涨{up_count} 下跌{down_count} 平盘{flat_count}
+    最高：{板块名} {基金名}({代码}) +X.XX%
+    最低：{板块名} {基金名}({代码}) -X.XX%
+```
+
+### 备选方式（旧方案 — 内联 Python + akshare）
+
+如需覆盖全量 A 股 387 概念板块 + 49 行业板块，可使用内联 Python 直接调用 akshare + fundgz API。代码见本技能历史版本或 `scripts/build-fund-mapping.py` 中的 `FUND_MAP` 字典。不再推荐此方式。
+
+### 推送格式规范（两种方式共有）
+
 - ❌ 禁 markdown 表格（| 列 | 语法）
 - ❌ 禁 box-drawing 表格线（┌─┬─┐）
-- ✅ 每条板块一行：序号. 板块名(类型) 📈/📉 涨跌幅%
+- ✅ 每条板块一行：序号. 板块名 🏷️ 基金名(代码) 📈/📉 涨跌幅%
 - ✅ 涨幅区和跌幅区之间用空行隔开
-- ✅ 末尾加概览行：概念+行业总数、上涨/下跌/平盘数量、最高/最低板块
-- ✅ 标题含日期
-- cron job schedule: `30 15 * * 1-5`（交易日15:30 CST）
+- ✅ 末尾加概览行：基金总数、上涨/下跌/平盘数量、最高/最低
+- ✅ 标题含日期（MM月DD日(星期X)）
+- ✅ cron job schedule: `30 15 * * 1-5`（交易日 15:30 CST，收盘后30分钟）
+- ✅ deliver: `origin`（推送到聊天窗口）
 
 ## 基金历史数据批量采集
 
@@ -1077,6 +1191,7 @@ df = ak.fund_open_fund_info_em(symbol='022365', indicator='单位净值走势')
 - `references/datasource-reference.md` — 各数据源字段详解
 - `references/nasdaq-api.md` — 新浪美股 API 文档（指数历史数据，替代 Nasdaq API）
 - `references/fund-api.md` — 天天基金净值 API（基金实时估算净值）
+- `references/fund-history-akshare.md` — 基金历史净值批量采集（akshare fund_open_fund_info_em 接口详解）
 - `references/charting.md` — matplotlib 暗色主题 K 线图生成（含 --chart 自动化用法）
 - `references/etf-mapping.md` — 板块→主题基金映射表（37个板块，48只基金），基于 lof-mapping.md，含日/周/月/年内涨跌幅数据
 - `references/fund-nav-history.csv` — 全部基金历史净值数据（51764条），用于统计分析和回测

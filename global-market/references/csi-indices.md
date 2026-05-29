@@ -1,3 +1,7 @@
+--- 
+references: true
+---
+
 # CSI 中证指数 (H-series) 数据参考
 
 ## 数据源状态
@@ -6,10 +10,14 @@
 |--------|--------------|------|
 | 腾讯 qt.gtimg.cn | ❌ | 返回 `v_pv_none_match="1"` |
 | 新浪 hq.sinajs.cn | ❌ | 返回空字符串 |
-| 东方财富 push2 | ❌ | 腾讯云环境拦截 |
-| 中证官网 csindex.com.cn | ⚠️ | Vue SPA, 无法 curl 解析 |
-| 天天基金 fundgz | ✅ (通过跟踪基金) | 需先找到对应基金代码 |
-| 腾讯 smartbox | ✅ (名称→代码映射) | 搜索中文名获取基金/ETF 代码 |
+| 东方财富 push2 | ❌ | 腾讯云环境拦截，`secid=1.H30269` 返回 `rc:102` |
+| 中证官网 csindex.com.cn | ❌ | Vue SPA, 无法 curl 解析；API 端点全部 404 |
+| 中证 API 子域名 | ❌ | 所有 `/csindex-home/api/*` 端点均 404 |
+| 新浪 CSI API | ❌ | `/csi/api/public/index_info.php?code=H30269` 404 |
+| 天天基金 fundgz | ✅ (通过跟踪基金) | 直接查代码 `H30269.js` 会 404，需用6位基金代码 |
+| 腾讯 smartbox | ✅ (名称→代码映射) | 搜索中文名获取基金/ETF 代码；`t=zs` 对 H 代码无效 |
+| 同花顺 API | ❌ | `d.10jqka.com.cn/v2/realhead/hq/H30269/last.js` 404 |
+| 中证 OSS CDN | ❌ | `csi-web-cdn.oss-cn-shanghai.aliyuncs.com` → NoSuchBucket |
 
 ## 核心方案
 
@@ -29,12 +37,13 @@ H-series CSI 指数无法直接查询，必须通过**跟踪该指数的基金/E
 | H30269 | 中证红利低波动 | 563020 (易方达) | 020602 (发起式) | — |
 | H30269 | 中证红利低波动100 | 515100 (景顺长城) | — | — |
 | H30269 | 中证红利低波动100 | 515450 (南方) | — | — |
+| H30269 | 中证红利低波动100 | 560520 (大成) | — | — |
+| H30269 | 中证红利低波动 | 560150 (泰康) | — | — |
 | H30269 | 中证红利低波动 | 159547 (华夏) | 021482 (发起式) | — |
 | H30269 | 中证红利低波动 | 159549 (天弘) | — | — |
 | H30269 | 中证红利低波动 | 159525 (富国) | — | — |
-| H30269 | 中证红利低波动 | 560150 (泰康) | — | — |
-| H30269 | 中证红利低波动100 | 560520 (大成) | — | — |
-| 000922 | 中证红利 | — (可直接查 Tencent s_sh000922) | 100032 (富国增强A) | — |
+| H30269 | 中证红利低波动100 | 159307 (博时) | — | — |
+| 000922 | 中证红利 | — (可直接查 Tencent `s_sh000922`) | 100032 (富国增强A) | — |
 
 ### 其他 H-series 指数
 
@@ -71,6 +80,11 @@ sh~512890~红利低波ETF华泰柏瑞~hldbetfhtbr~ETF^jj~007466~华泰柏瑞中�
 curl -s "https://smartbox.gtimg.cn/s3/?v=2&q=红利低波&t=all" | iconv -f GBK -t UTF-8
 ```
 
+**注意**：
+- `t=zs` 过滤仅指数，但 CSI H-series 代码不会被返回
+- `t=all` 可返回 ETF 和基金代码，对 H-series 查询更有用
+- 搜索 H 代码本身（如 `q=H30269`）通常返回空
+
 ## 天天基金 API 字段
 
 **端点**：`https://fundgz.1234567.com.cn/js/{6位基金代码}.js`
@@ -91,18 +105,50 @@ curl -s "https://smartbox.gtimg.cn/s3/?v=2&q=红利低波&t=all" | iconv -f GBK 
 当用户输入 CSI H-series 代码（如 H30269）：
 
 ```bash
-# Step 1: 检查 smartbox 是否有已知映射
-# 从记忆中的映射表查找该指数代码（见上方映射表）
+# Step 1: 检查已知映射表（见上方红利策略类表格）
+# H30269 → 512890 (ETF) / 007466 (A类) / 007467 (C类)
 
-# Step 2: 通过基金 API 获取估算涨跌幅
-curl -s "https://fundgz.1234567.com.cn/js/007466.js"
-
-# Step 3: 通过 ETF 获取实时价（可选）
+# Step 2: 通过 ETF 获取实时价
 curl -s "https://qt.gtimg.cn/q=sh512890" | iconv -f GBK -t UTF-8
+# → 涨跌幅即为指数近似值
+
+# Step 3: 通过基金 API 获取估算涨跌幅（可选，交叉验证）
+curl -s "https://fundgz.1234567.com.cn/js/007467.js"
+# → gszzl 字段为估算涨跌幅
 
 # Step 4: 汇总结果
-echo "H30269 中证红利低波动指数 今日估算涨跌幅: +0.66% (通过007466推算)"
+echo "H30269 中证红利低波动指数 今日估算涨跌幅: +X.XX% (通过512890 ETF推算)"
 ```
+
+### 用户明确要「指数本身」时的沟通模板
+
+当用户特别强调要查指数而非基金时（如回复「我要查的是中证红利低波指数H30269」），必须分开呈现：
+
+```
+H30269（中证红利低波动指数）无直接实时接口，以下为ETF推算值：
+
+📈 ETF 512890 最新价 ¥X.XXX 📈 +X.XX%
+📈 联接基金 007467 估算净值 ¥X.XXXX 📈 +X.XX%
+预估指数涨跌幅：约 +X.X%~+X.X%
+```
+
+**关键原则**：标注「推算/近似/估算」字样，区分「ETF价」和「指数值」
+
+## Chrome 无法渲染 csindex.com.cn 的已知限制
+
+中证官网使用 Vue SPA 架构，需要 JavaScript 渲染。当前环境：
+- Google Chrome 存在沙箱限制，无法自动启动
+- 手动启动需 `--no-sandbox` 参数，但 browser_navigate 工具无法控制启动参数
+- 所有非根路径请求均返回相同的 Vue shell HTML（无数据）
+- 无法通过 curl/requests 获取渲染后的数据
+
+**已尝试无效的 csindex API 端点**（2026-05-29 核实）：
+- `/csindex-home/api/index/quote?indexCode=H30269` → 404
+- `/csindex-home/api/index/real?indexCode=H30269` → 404
+- `/csindex-home/api/index/quote/v1?indexCode=H30269` → 404
+- `/csindex-home/api/index/v1/realTime?indexCode=H30269` → 404
+- `/csindex-home/api/search/searchIndexInfo?searchField=H30269` → 404
+- `webapi.csindex.com.cn` 子域名 → 无响应
 
 ## 保存到记忆
 

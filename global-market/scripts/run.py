@@ -215,6 +215,39 @@ def query_fund(code):
         return None
 
 
+def _fetch_fund_nav_history(code, days=120):
+    """获取基金历史净值数据（用于回撤计算）
+
+    使用 akshare 的 fund_open_fund_info_em 接口，已在腾讯云验证可用。
+    返回按日期正序排列的 list[dict]，每项含 date/nav 字段。
+    取最近 days 条数据。
+    """
+    try:
+        import akshare as ak
+        df = ak.fund_open_fund_info_em(symbol=code, indicator='单位净值走势')
+        if df is None or df.empty:
+            return None
+
+        parsed = []
+        for _, row in df.iterrows():
+            try:
+                dt = datetime.strptime(str(row['净值日期']), '%Y-%m-%d')
+                nav = float(row['单位净值'])
+                parsed.append({'date': dt, 'nav': nav})
+            except (ValueError, KeyError, TypeError):
+                continue
+
+        if not parsed:
+            return None
+
+        parsed.sort(key=lambda x: x['date'])
+        if len(parsed) > days:
+            parsed = parsed[-days:]
+        return parsed
+    except Exception:
+        return None
+
+
 # ═════════════════════════════════════════════════════════
 # 美股
 # ═════════════════════════════════════════════════════════
@@ -717,6 +750,21 @@ def parse_chart_params(raw_query):
     return stock_query, k_period, ma_periods
 
 
+def parse_drawdown_params(raw_query):
+    """从查询字符串中解析回撤图表参数
+
+    格式: <代码/名称>,HC<N>
+    如: 007467,HC30, 013275,HC90, 600519,HC30, 茅台,HC30
+    返回: (stock_query, hc_days)  或 None
+    """
+    m = re.search(r"[,;，\s]*[Hh][Cc](\d+)\s*$", raw_query)
+    if not m:
+        return None
+    hc_days = int(m.group(1))
+    stock_query = raw_query[:m.start()].strip().rstrip(",;， ")
+    return stock_query, hc_days
+
+
 def generate_stock_chart(parsed, name, code, market_type="a", ma_periods=None, k_period=90):
     """生成个股K线趋势图（K线实体 + 动态MA均线 + 成交量）
 
@@ -900,6 +948,106 @@ def generate_stock_chart(parsed, name, code, market_type="a", ma_periods=None, k
     ma_part = "_".join([f"MA{p}" for p in ma_periods])
     code_safe = re.sub(r"[^A-Za-z0-9]", "", code)
     filename = f"{code_safe}_K{k_period}_{ma_part}.png"
+    out_path = os.path.join(_CHARTS_DIR, filename)
+    plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="#1a1a2e")
+    plt.close(fig)
+    return out_path
+
+
+def generate_drawdown_chart(nav_data, name, code, days):
+    """生成回撤折线图（暗色主题）
+
+    参数:
+        nav_data: list[dict] — 含 date/nav（基金）或 date/close（股票）
+        name, code: 显示名称和代码
+        days: 回撤统计交易日数
+    返回: 图片路径（charts/ 下）
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    import matplotlib.font_manager as fm
+    import numpy as np
+
+    # 注册中文字体
+    _CJK_FONT = "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
+    if _CJK_FONT:
+        fm.fontManager.addfont(_CJK_FONT)
+        plt.rcParams["font.family"] = "WenQuanYi Zen Hei"
+    plt.rcParams["axes.unicode_minus"] = False
+
+    # 提取数值序列
+    sorted_data = sorted(nav_data, key=lambda x: x["date"])
+    dates = [d["date"] for d in sorted_data]
+    if "nav" in sorted_data[0]:
+        values = np.array([d["nav"] for d in sorted_data])
+    else:
+        values = np.array([d["close"] for d in sorted_data])
+
+    # 计算回撤：drawdown = (value - peak) / peak * 100
+    peak = np.maximum.accumulate(values)
+    drawdown = (values - peak) / peak * 100
+
+    # 最大回撤
+    max_dd_idx = int(np.argmin(drawdown))
+    max_dd = drawdown[max_dd_idx]
+    max_dd_date = dates[max_dd_idx]
+    current_dd = drawdown[-1]
+
+    # 暗色主题
+    plt.style.use("dark_background")
+    fig, ax = plt.subplots(1, 1, figsize=(14, 7))
+    fig.patch.set_facecolor("#1a1a2e")
+
+    # 回撤填充区域 + 折线
+    ax.fill_between(dates, 0, drawdown, where=drawdown < 0,
+                    color="#ff4466", alpha=0.15, step="pre")
+    ax.plot(dates, drawdown, color="#ff4466", linewidth=2.0, zorder=3)
+
+    # 零线
+    ax.axhline(y=0, color="#555555", linewidth=1, linestyle="-", alpha=0.5)
+
+    # 最大回撤标注
+    ax.scatter(max_dd_date, max_dd, color="#ff0000", s=140, zorder=5, marker="v")
+    ax.annotate(
+        f"最大回撤 {max_dd:.2f}%\n{max_dd_date.strftime('%Y-%m-%d')}",
+        (max_dd_date, max_dd), textcoords="offset points",
+        xytext=(20, -35), fontsize=11, color="#ff6666",
+        fontweight="bold",
+        arrowprops=dict(arrowstyle="->", color="#ff6666", lw=1.5),
+    )
+
+    # 当前回撤标注
+    ax.annotate(
+        f"当前回撤 {current_dd:.2f}%",
+        (dates[-1], drawdown[-1]), textcoords="offset points",
+        xytext=(10, 10), fontsize=12, color="#ffaa00", fontweight="bold",
+    )
+
+    ax.set_ylabel("回撤 (%)", fontsize=12, color="#ccc")
+    ax.set_title(
+        f"{name}（{code}）— 近{days}个交易日回撤走势",
+        fontsize=16, fontweight="bold", color="white", pad=18,
+    )
+    y_bottom = min(drawdown) * 1.15
+    y_top = max(max(drawdown) * 1.5 + 2, 5) if any(d < 0 for d in drawdown) else 2
+    ax.set_ylim(y_bottom, y_top)
+
+    ax.grid(True, alpha=0.12, linestyle="--")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    # X 轴日期
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+    if len(dates) > 20:
+        ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+    code_safe = re.sub(r"[^A-Za-z0-9]", "", code)
+    filename = f"{code_safe}_HC{days}.png"
     out_path = os.path.join(_CHARTS_DIR, filename)
     plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="#1a1a2e")
     plt.close(fig)
@@ -1201,6 +1349,12 @@ def print_usage():
     print("  python run.py \"002938,K120,[MA20,MA45,MA120]\"")
     print("  python run.py \"茅台,K60,[MA10,MA20,MA30]\"")
     print("  python run.py \"AAPL,[MA50,MA100,MA200]\"")
+    print()
+    print("  回撤折线图 (HC = Drawdown):")
+    print("  python run.py \"007467,HC30\"     # 华泰柏瑞红利低波联接C, 30日回撤")
+    print("  python run.py \"013275,HC90\"     # 富国中证煤炭C, 90日回撤")
+    print("  python run.py \"600519,HC60\"     # 茅台, 60日回撤")
+    print("  python run.py \"茅台,HC30\"        # 茅台名称搜索, 30日回撤")
 
 
 def main():
@@ -1278,6 +1432,98 @@ def main():
     # 对股票查询：去掉 --chart 后再拼接查询字符串
     stock_args = [a for a in args if a != "--chart"]
     raw_query = " ".join(stock_args)
+
+    # === 回撤折线图 (HC) 模式 ===
+    parsed_hc = parse_drawdown_params(raw_query)
+    if parsed_hc:
+        hc_stock_query, hc_days = parsed_hc
+        hc_market, hc_id = detect_market(hc_stock_query)
+
+        # 获取显示名称 + 历史数据
+        hc_display_name = hc_stock_query
+        hc_code = re.sub(r"[^A-Za-z0-9]", "", hc_stock_query)
+        hc_hist = None
+
+        # 6 位数字：先试基金，再试 A 股
+        if re.match(r"^\d{6}$", hc_stock_query):
+            fund_info = query_fund(hc_stock_query)
+            if fund_info and not fund_info.startswith("❌"):
+                name_m = re.search(r"\*\*(.+?)\*\*", fund_info)
+                hc_display_name = name_m.group(1) if name_m else hc_stock_query
+                hc_code = hc_stock_query
+                hc_hist = _fetch_fund_nav_history(hc_stock_query, days=hc_days * 2)
+                if not hc_hist:
+                    print(f"❌ 未获取到基金「{hc_stock_query}」历史净值数据")
+                    return
+            else:
+                # 不是基金，走 A 股
+                resolved = _resolve_a_code(hc_stock_query)
+                if not resolved:
+                    print(f"❌ 未找到「{hc_stock_query}」")
+                    return
+                a_prefix, a_code = resolved
+                a_result = _tx_fetch(f"{a_prefix}{a_code}")
+                if a_result:
+                    hc_display_name = a_result[1]
+                    hc_code = a_code
+                hc_hist = _fetch_stock_history("a", hc_stock_query, days=hc_days * 2)
+
+        elif hc_market == "a":
+            # 中文名称或非标准代码 → A 股
+            resolved = _resolve_a_code(hc_stock_query)
+            if not resolved:
+                print(f"❌ 未找到 A 股「{hc_stock_query}」")
+                return
+            a_prefix, a_code = resolved
+            a_result = _tx_fetch(f"{a_prefix}{a_code}")
+            if a_result:
+                hc_display_name = a_result[1]
+                hc_code = a_code
+            hc_hist = _fetch_stock_history("a", hc_stock_query, days=hc_days * 2)
+
+        elif hc_market == "us":
+            us_result = query_us_stock(hc_stock_query)
+            if not us_result.startswith("❌"):
+                name_m = re.search(r"\*\*(.+?)\*\*", us_result)
+                hc_display_name = name_m.group(1) if name_m else hc_stock_query
+                hc_code = hc_stock_query.upper()
+            hc_hist = _fetch_stock_history("us", hc_stock_query, days=hc_days * 2)
+
+        elif hc_market == "hk":
+            hk_result = query_hk_stock(hc_id)
+            if not hk_result.startswith("❌"):
+                name_m = re.search(r"\*\*(.+?)\*\*", hk_result)
+                hc_display_name = name_m.group(1) if name_m else hc_stock_query
+                hc_code = hc_id
+            hc_hist = _fetch_stock_history("hk", hc_id, days=hc_days * 2)
+
+        else:
+            print(f"❌ 不支持的回撤查询市场类型: {hc_stock_query}")
+            return
+
+        if not hc_hist or len(hc_hist) < 3:
+            print(f"⚠️ 未获取到足够的K线数据（当前{len(hc_hist) if hc_hist else 0}条，需≥3条）")
+            return
+
+        # 只取最近 hc_days 个交易日
+        if len(hc_hist) > hc_days:
+            hc_hist = hc_hist[-hc_days:]
+
+        try:
+            chart_path = generate_drawdown_chart(hc_hist, hc_display_name, hc_code, hc_days)
+            print(f"📉 回撤折线图已生成: {chart_path}")
+            print(f"   标的: {hc_display_name}（{hc_code}） | 回撤区间: {hc_days}个交易日")
+            # 简要回撤摘要
+            vals = [d.get('nav', d.get('close', 0)) for d in hc_hist]
+            peak_v = max(vals)
+            cur_v = vals[-1]
+            dd = (cur_v - peak_v) / peak_v * 100
+            max_d = min((v - max(vals[:i+1])) / max(vals[:i+1]) * 100 
+                       for i, v in enumerate(vals))
+            print(f"   当前回撤: {dd:.2f}% | 区间最大回撤: {min(max_d, dd):.2f}%")
+        except Exception as e:
+            print(f"⚠️ 回撤图生成失败: {str(e)}")
+        return
 
     # 检测动态图表参数（新格式: "002938,K120,[MA20,MA45,MA120]"）
     parsed_chart = parse_chart_params(raw_query)

@@ -1,0 +1,34 @@
+# ─────────────────────────────────────────────
+# FSI Skills — Python 依赖（pip install -r requirements.txt）
+# ─────────────────────────────────────────────
+# 使用前请先激活虚拟环境：
+#   python3 -m venv ~/venv && source ~/venv/bin/activate
+#   pip install -r requirements.txt
+# ─────────────────────────────────────────────
+
+# 数据获取
+requests>=2.28,<3
+pandas>=2.0
+numpy>=1.24
+
+# 配置管理（price-monitor）
+PyYAML>=6.0
+
+# 中国金融市场数据（akshare 用于基金历史净值）
+akshare>=1.15
+
+# K线图 / 回撤图生成（global-market --chart 和 HC 功能）
+# 注：matplotlib 中文显示需要系统字体
+#   Ubuntu/Debian: sudo apt install fonts-wqy-zenhei
+#   macOS: 自带苹方，无需额外安装
+matplotlib>=3.7
+
+# ─────────────────────────────────────────────
+# 以上是核心依赖，以下是完整版本锁定（可选）
+# ─────────────────────────────────────────────
+# requests==2.34.2
+# pandas==3.0.3
+# numpy==2.4.5
+# PyYAML==6.0.3
+# akshare==1.18.60
+# matplotlib==3.10.9

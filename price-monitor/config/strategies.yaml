@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────
+# 策略配置（strategies.yaml）
+# ─────────────────────────────────────────────
+# 在此配置各策略的参数，以及哪些标的运行哪些策略
+# ─────────────────────────────────────────────
+
+# 全局设置
+global:
+  lookback_days: 120       # 拉取历史数据的默认天数
+  min_data_days: 20        # 最少数据天数，不足则跳过
+  report_dir: "reports/signals"
+
+# 策略列表
+strategies:
+
+  # ── 策略1：回撤再平衡 ──
+  - name: "drawdown-rebalance"
+    enabled: true
+    # 适用标的范围：all / etf / stock / fund，或具体代码列表
+    apply_to: "etf"
+    # 排除列表
+    exclude: []
+    params:
+      lookback_days: 120
+      # 加仓档位：[回撤%, 加仓比例%]
+      add_thresholds:
+        - [-5, 10]     # 回撤5% → 加仓10%
+        - [-10, 15]    # 回撤10% → 加仓15%
+        - [-15, 25]    # 回撤15% → 加仓25%
+        - [-20, 40]    # 回撤20% → 加仓40%
+      # 反弹减仓阈值（从低点反弹 %）
+      sell_recovery: 50
+      # 同方向最小间隔（交易日）
+      min_interval_days: 5
+      max_single_pct: 20
+
+  # ── 策略2：金叉死叉 ──
+  - name: "golden-cross"
+    enabled: true
+    apply_to: "all"
+    params:
+      fast_periods: [5, 10, 20]
+      slow_periods: [20, 30, 60]
+      cross_window: 90
+
+  # ── 策略3：均线排列趋势 ──
+  - name: "ma-trend"
+    enabled: true
+    apply_to: "all"
+    params:
+      ma_periods: [5, 10, 20, 30, 60, 120]
+      buy_threshold: 0.66
+      sell_threshold: 0.66
+      overbought_pct: 25.0
+      oversold_pct: -15.0
+
+  # ── 策略4：个人回撤加仓（你的专属策略） ──
+  - name: "drawdown-personal"
+    enabled: true
+    apply_to: "all"
+    # 排除已大幅反弹的标的（避免追涨提醒）
+    exclude: []
+    params:
+      # 回撤档位：[回撤%, 加仓金额(元), 标签]
+      thresholds:
+        - [-3, 5000, "轻度加仓"]
+        - [-5, 10000, "中度加仓"]
+        - [-8, 20000, "较大加仓"]
+        - [-10, 0, "观望等待"]
+      # 回撤恢复到多少百分比时重置监控状态
+      reset_at_pct: -1.0
+      # 回撤计算窗口（交易日）
+      lookback_days: 250

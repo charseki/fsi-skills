@@ -29,6 +29,29 @@ fsi/
 │       ├── sector-mapping.md       # A股板块名称映射表
 │       ├── technical-analysis.md   # 金叉/死叉/MACD量化分析脚本
 │       └── us-futures-sources.md   # 美股期货数据源排查记录
+├── price-monitor/           # 量化交易策略引擎（v1.0.0）
+│   ├── SKILL.md             # 技能定义文档
+│   ├── core/
+│   │   ├── market_data.py   # 统一数据获取层（A股/美股/港股/基金）
+│   │   ├── portfolio.py     # 持仓管理（增删改查+快照+交易历史）
+│   │   └── run.py           # 主调度引擎（全量扫描+策略编排+汇总报告）
+│   ├── strategies/
+│   │   ├── base.py               # 策略基类 (BaseStrategy + Signal)
+│   │   ├── drawdown_rebalance.py # 回撤再平衡：回撤加仓+反弹减仓
+│   │   ├── golden_cross.py       # 金叉死叉：多组均线对交叉检测
+│   │   ├── ma_strategy.py        # 均线排列：多头/空头+超买超卖
+│   │   └── drawdown_personal.py  # 个人回撤加仓：3%/5%/8%/10%+固定金额阶梯
+│   ├── config/
+│   │   ├── symbols.yaml     # 监控标的列表（14个标的）
+│   │   └── strategies.yaml  # 策略参数配置（4个策略）
+│   ├── reports/
+│   │   ├── signals/         # 扫描报告（JSON）
+│   │   └── snapshots/       # 持仓快照（JSON）
+│   ├── scripts/
+│   │   ├── scan.py          # Hermes入口脚本
+│   │   └── daily_personal.py# 个人策略每日监控脚本
+│   └── examples/
+│       └── quickstart.py    # 快速上手演示
 └── README.md               # 本文件
 ```
 
@@ -200,6 +223,108 @@ run.py "茅台,AAPL,00700,USD/CNY"
 
 专为腾讯云环境优化 — 规避了东方财富 API 的拦截。实时行情走腾讯行情（`qt.gtimg.cn`）/ 新浪港股（`hq.sinajs.cn`），历史K线走 Tencent ifzq API（`web.ifzq.gtimg.cn`）和 新浪美股 US_MinKService API，基金历史净值走 akshare `fund_open_fund_info_em()`。仅依赖 `requests` 和 `akshare`。
 
+---
+
+### 2. price-monitor — 量化交易策略引擎
+
+**版本：** v1.0.0
+
+多策略扫描 + 信号生成 + 持仓管理。定时监控所有标的，运行多个量化策略，生成买入/卖出/加仓信号。策略可插拔，随时添加。
+
+#### 内置策略
+
+| 策略 | 文件名 | 逻辑 | 适用场景 |
+|------|--------|------|----------|
+| 回撤再平衡 | `drawdown_rebalance.py` | 回撤到档位加仓，从低点反弹减仓 | ETF定投管理 |
+| 金叉死叉 | `golden_cross.py` | 5组均线对交叉检测，综合投票 | 趋势跟踪 |
+| 均线排列 | `ma_strategy.py` | 多头/空头排列判断+超买超卖 | 趋势判断/过滤器 |
+| **个人回撤加仓** | **`drawdown_personal.py`** | **3%/5%/8%/10%+阶梯，固定金额提醒** | **盯盘补仓** |
+
+#### 核心命令
+
+```bash
+# 全量扫描（所有标的 × 所有策略）
+source ~/venv/bin/activate && python3 core/run.py
+
+# 只跑指定策略
+python3 core/run.py --strategy drawdown-personal
+
+# 只扫单个标的
+python3 core/run.py --symbol 512890
+
+# 评估当前持仓
+python3 core/run.py --portfolio
+
+# 添加持仓
+python3 core/run.py --add-position 512890 红利低波ETF 1000 1.025
+
+# 查看配置
+python3 scripts/scan.py --list-symbols
+python3 scripts/scan.py --list-strategies
+
+# 快速演示
+python3 examples/quickstart.py
+```
+
+#### 个人回撤加仓策略（你的专属策略）
+
+基于回撤趋势变化判断——只在你注意到回撤**正在发生**时提醒，不回放历史深跌：
+
+| 回撤幅度 | 操作 | 金额 |
+|----------|------|------|
+| 跌 3% | 轻度加仓 | +¥5,000 |
+| 跌 5% | 中度加仓 | +¥10,000 |
+| 跌 8% | 较大加仓 | +¥20,000 |
+| 跌 10%+ | 观望等待 | 不加仓，仅提醒 |
+
+- **趋势检测**：参考近10日回撤变化，只在回撤加深时触发
+- **单次有效**：每个档位每个标的只触发一次，价格回升后自动重置
+- **跨市场**：A股/ETF/美股/港股/基金全覆盖
+
+**每日自动监控（cronjob）：**
+
+```
+schedule: 30 15 * * 1-5  (交易日 15:30 CST)
+job_id:   45de32fd2b57
+deliver:  推送到聊天窗口
+```
+
+**输出示例：**
+
+```
+📊 个人回撤监控日报 — 2026-06-01
+
+  📈 科创50ETF (588000)  现价: 1.7500
+     📉 +¥10,000 — 触发中度加仓档位(-5%)
+     📉 +¥20,000 — 触发较大加仓档位(-8%)
+     ⚠️ 建议观望不加仓
+
+  📈 芯片ETF (159995)  现价: 2.3570
+     📉 +¥5,000 — 触发轻度加仓档位(-3%)
+     📉 +¥10,000 — 触发中度加仓档位(-5%)
+     📉 +¥20,000 — 触发较大加仓档位(-8%)
+     ⚠️ 建议观望不加仓
+
+───
+8 个信号 | 2026-06-01
+```
+
+#### 添加新策略（3步）
+
+1. 在 `strategies/` 下新建 `.py` 文件，继承 `BaseStrategy` 实现 `evaluate()`
+2. 在 `core/run.py` 的 `_load_strategy()` 中注册
+3. 在 `config/strategies.yaml` 中添加配置
+
+#### 配置说明
+
+监控标的编辑 `config/symbols.yaml`，策略参数编辑 `config/strategies.yaml`。当前监控14个标的（宽基ETF + 行业ETF + 美股 + 个股）。
+
+#### 数据源
+
+复用 global-market 已验证的数据源：A股/港股走 Tencent ifzq + 新浪，美股走新浪 US_MinKService，基金走天天基金 + akshare。全部已适配腾讯云环境。
+
+---
+
 ## 使用前提
 
 - **Python 环境：** 需要 `akshare`, `requests`（图表功能需 `matplotlib`, `numpy`）；中文字体需 `WenQuanYi Zen Hei`
@@ -208,6 +333,6 @@ run.py "茅台,AAPL,00700,USD/CNY"
 ## 迭代计划
 
 该目录将逐步扩展更多 FSI 相关技能，包括但不限于：
-- 股票扫描器（技术面/基本面选股）
-- 价格监控（目标价提醒）
+- 股票扫描器（技术面/基本面选股）✅ v1.0.0 已建目录
+- 价格监控（目标价提醒）✅ v1.0.0 已完成（量化策略引擎）
 - 更多市场数据接入

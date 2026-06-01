@@ -1,0 +1,7 @@
+# 运行时生成文件
+reports/signals/
+reports/snapshots/
+charts/
+__pycache__/
+*.pyc
+*.pyo

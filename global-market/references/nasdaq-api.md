@@ -39,6 +39,48 @@ var data=([{...},{...},...]);
 }
 ```
 
+## ⚠️ 解析陷阱
+
+### 1. 外层括号 `([...])`
+
+返回数据以 `var data=([...])` 格式包裹，中间有**括号**包裹数组。直接 JSON 解析会失败：
+
+```python
+# ✅ 正确：去括号后再解析
+text = r.text
+idx = text.find("data=")
+json_str = text[idx + 5:].strip().rstrip(";").rstrip()
+if json_str.startswith("(") and json_str.endswith(")"):
+    json_str = json_str[1:-1]
+raw = json.loads(json_str)
+```
+
+### 2. 行格式是 dict，不是数组
+
+每条记录是 `{"d":"...","o":"...","c":"...","h":"...","l":"...","v":"..."}` 格式的对象，**不是** `["date",open,close,high,low,volume]` 数组。
+
+```python
+# ✅ 正确：用 dict key 读取
+rows.append({
+    "date": row["d"],
+    "open": float(row["o"]),
+    "close": float(row["c"]),
+    "high": float(row["h"]),
+    "low": float(row["l"]),
+    "volume": float(row["v"]),
+})
+```
+
+```python
+# ❌ 错误：按索引读数组
+rows.append((row[0], row[1], row[4], ...))  # row是dict，索引报错！
+```
+
+### 3. 大量历史数据
+
+单次请求可返回 5000+ 条记录（AAPL 从 1984 年至今约 9958 条）。务必用 `datalen` 参数控制获取量，避免内存问题。
+```
+
 ## 支持的指数代码
 
 | 代码 | 新浪 symbol | 指数 | 数据量 |

@@ -254,6 +254,9 @@ global-market/
 
 **只依赖 `requests` 一个 pip 包。** akshare 和 yfinance 在部分云环境（特别是腾讯云）可能被拦截/限流。
 
+> 💡 **量化策略扩展**：数据源与 [`price-monitor`](../price-monitor/SKILL.md) 技能共享。如需多策略扫描、回撤加仓/金叉死叉/均线排列、持仓管理等量化功能，可直接调用 `price-monitor` 引擎。
+> `source ~/venv/bin/activate && python3 ~/.hermes/skills/fsi/price-monitor/core/run.py`
+
 ## 腾讯行情 (qt.gtimg.cn) 字段索引
 
 数据返回格式：`v_{code}="field1~field2~...~fieldN"`，按 `~` 分割。
@@ -416,6 +419,8 @@ A股和美股关键区别：**A股涨跌幅/最高/最低在索引 31-34，美�
 34. **HC 参数 `,HC<N>` 必须写在末尾**：格式 `<代码>,HC<N>`，HC 在逗号后。`HC30 007467` 不会被识别。支持中文逗号：`"007467，HC30"`。
 35. **HC 回撤依赖 akshare 基金净值或 ifzq K线**：基金走 `ak.fund_open_fund_info_em()`（首次调用延迟约 2-3 秒），股票走 Tencent ifzq API。盘中实时回撤不可用，计算基于历史收盘价/净值。
 36. **HC 六位代码自动分流**：6 位数字如 `007467` 先试基金（天天基金 → akshare 历史净值），失败后自动降级为 A 股 ifzq K线。无需手动指定类型。
+37. **新浪 US_MinKService 返回 dict 格式（非 array）**：美股历史K线接口返回 JSON 数组内每行为 `{"d":"date","o":"open","h":"high","l":"low","c":"close","v":"volume"}` 字典，而非 `[date,open,close,high,low,volume]` 数组。直接按索引 `row[0]` 取字段会报错。必须用 `row.get("c")` 或 `row["close"]` 取值，同时数据包裹在 `var data=([...])` 括号中，需 strip 外层括号再 JSON 解析。
+38. **ifzq API JSON key 是 prefix+code**：如 `sh512890` 而非 `512890`。`d["data"][code]` 返回 None。必须用 `f"{prefix}{code}"` 构建 key 查询，失败时降级用纯 code 兜底。
 
 ## Verification Checklist
 
